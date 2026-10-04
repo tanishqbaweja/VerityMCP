@@ -143,19 +143,22 @@ All filesystem mutations, patch applications, git reverts, process executions, b
     "read_file",
     "Reads a file with line slicing and SHA-256 hash. If reading an image (.png, .jpg, etc.), automatically includes visual image payload in response.",
     {
-      file_path: z.string().describe("Path to the file."),
+      file_path: z.string().optional().describe("Path to the file."),
+      path: z.string().optional().describe("Alias for file_path."),
       line_start: z.number().int().positive().optional().describe("1-based start line."),
       line_end: z.number().int().positive().optional().describe("1-based end line."),
       with_line_numbers: z.boolean().optional().describe("Include line numbers. Defaults to true."),
     },
-    async ({ file_path, line_start, line_end, with_line_numbers }) => {
+    async (args) => {
+      const targetPath = args.file_path || args.path;
+      if (!targetPath) throw new Error("Missing required argument: file_path (or path)");
       const res = await executeReadFile({
         workspaceRoot: getRoot(),
         allowedRoots: config.allowedRoots,
-        filePath: file_path,
-        lineStart: line_start,
-        lineEnd: line_end,
-        withLineNumbers: with_line_numbers ?? true,
+        filePath: targetPath,
+        lineStart: args.line_start,
+        lineEnd: args.line_end,
+        withLineNumbers: args.with_line_numbers ?? true,
       });
       return formatMcpResponse(res.toolResponse, { image: res.imagePayload });
     }
@@ -166,17 +169,20 @@ All filesystem mutations, patch applications, git reverts, process executions, b
     "write_file",
     "Writes full content to a file with mandatory post-write byte readback and SHA-256 verification.",
     {
-      file_path: z.string().describe("Target file path."),
+      file_path: z.string().optional().describe("Target file path."),
+      path: z.string().optional().describe("Alias for file_path."),
       content: z.string().describe("File content to write."),
       overwrite: z.boolean().optional().describe("Allow overwriting existing files. Defaults to true."),
     },
-    async ({ file_path, content, overwrite }) => {
+    async (args) => {
+      const targetPath = args.file_path || args.path;
+      if (!targetPath) throw new Error("Missing required argument: file_path (or path)");
       const res = await executeWriteFile({
         workspaceRoot: getRoot(),
         allowedRoots: config.allowedRoots,
-        filePath: file_path,
-        content,
-        overwrite: overwrite ?? true,
+        filePath: targetPath,
+        content: args.content,
+        overwrite: args.overwrite ?? true,
       });
       return formatMcpResponse(res);
     }
@@ -187,19 +193,22 @@ All filesystem mutations, patch applications, git reverts, process executions, b
     "edit_file",
     "Performs exact string replacement with uniqueness verification, unified diff output, and post-mutation hash verification.",
     {
-      file_path: z.string().describe("Target file path."),
+      file_path: z.string().optional().describe("Target file path."),
+      path: z.string().optional().describe("Alias for file_path."),
       old_string: z.string().describe("Exact text to replace."),
       new_string: z.string().describe("Replacement text."),
       replace_all: z.boolean().optional().describe("Replace all occurrences if multiple. Defaults to false."),
     },
-    async ({ file_path, old_string, new_string, replace_all }) => {
+    async (args) => {
+      const targetPath = args.file_path || args.path;
+      if (!targetPath) throw new Error("Missing required argument: file_path (or path)");
       const res = await executeEditFile({
         workspaceRoot: getRoot(),
         allowedRoots: config.allowedRoots,
-        filePath: file_path,
-        oldString: old_string,
-        newString: new_string,
-        replaceAll: replace_all ?? false,
+        filePath: targetPath,
+        oldString: args.old_string,
+        newString: args.new_string,
+        replaceAll: args.replace_all ?? false,
       });
       return formatMcpResponse(res);
     }
@@ -368,21 +377,25 @@ All filesystem mutations, patch applications, git reverts, process executions, b
     "search_code",
     "High-speed code search powered by ripgrep with line numbers and file matching.",
     {
-      query: z.string().describe("Text or regex to search for."),
+      query: z.string().optional().describe("Text or regex to search for."),
+      pattern: z.string().optional().describe("Alias for query."),
       dir_path: z.string().optional().describe("Subdirectory to search."),
+      path: z.string().optional().describe("Alias for dir_path."),
       case_sensitive: z.boolean().optional().describe("Case sensitivity. Defaults to false."),
       glob_filter: z.string().optional().describe("File pattern filter (e.g. *.ts)."),
       max_results: z.number().int().positive().optional().describe("Max match count. Defaults to 100."),
     },
-    async ({ query, dir_path, case_sensitive, glob_filter, max_results }) => {
+    async (args) => {
+      const q = args.query || args.pattern;
+      if (!q) throw new Error("Missing required argument: query (or pattern)");
       const res = executeSearchCode({
         workspaceRoot: getRoot(),
         allowedRoots: config.allowedRoots,
-        query,
-        dirPath: dir_path,
-        caseSensitive: case_sensitive ?? false,
-        globFilter: glob_filter,
-        maxResults: max_results ?? 100,
+        query: q,
+        dirPath: args.dir_path || args.path,
+        caseSensitive: args.case_sensitive ?? false,
+        globFilter: args.glob_filter,
+        maxResults: args.max_results ?? 100,
       });
       return formatMcpResponse(res);
     }
@@ -393,15 +406,18 @@ All filesystem mutations, patch applications, git reverts, process executions, b
     "get_outline",
     "Extracts structural symbols (functions, classes, interfaces, methods, types) from code.",
     {
-      file_path: z.string().describe("Path of code file to outline."),
+      file_path: z.string().optional().describe("Path of code file to outline."),
+      path: z.string().optional().describe("Alias for file_path."),
       verbosity: z.enum(["minimal", "detailed"]).optional().describe("Verbosity mode. Defaults to detailed."),
     },
-    async ({ file_path, verbosity }) => {
+    async (args) => {
+      const targetPath = args.file_path || args.path;
+      if (!targetPath) throw new Error("Missing required argument: file_path (or path)");
       const res = await executeGetOutline({
         workspaceRoot: getRoot(),
         allowedRoots: config.allowedRoots,
-        filePath: file_path,
-        verbosity: verbosity ?? "detailed",
+        filePath: targetPath,
+        verbosity: args.verbosity ?? "detailed",
       });
       return formatMcpResponse(res);
     }
@@ -745,12 +761,17 @@ All filesystem mutations, patch applications, git reverts, process executions, b
     {
       ref: z.string().optional().describe("Element reference from browser_snapshot (e.g. 'e1')."),
       selector: z.string().optional().describe("CSS selector."),
-      value: z.string().describe("Text value to fill."),
+      target: z.object({ ref: z.string().optional(), selector: z.string().optional() }).optional(),
+      value: z.string().optional().describe("Text value to fill."),
+      text: z.string().optional().describe("Alias for value."),
       session_id: z.string().optional().describe("Browser session ID."),
     },
-    async ({ ref, selector, value, session_id = "default" }) => {
-      const session = await browserManager.getSession(session_id);
-      const res = await executeFill(session, { ref, selector }, value);
+    async (args) => {
+      const session = await browserManager.getSession(args.session_id || "default");
+      const ref = args.ref || args.target?.ref;
+      const selector = args.selector || args.target?.selector;
+      const val = args.value ?? args.text ?? "";
+      const res = await executeFill(session, { ref, selector }, val);
       return formatMcpResponse(res);
     }
   );
@@ -762,11 +783,15 @@ All filesystem mutations, patch applications, git reverts, process executions, b
     {
       ref: z.string().optional(),
       selector: z.string().optional(),
+      target: z.object({ ref: z.string().optional(), selector: z.string().optional() }).optional(),
+      checked: z.boolean().optional().describe("Defaults to true."),
       session_id: z.string().optional(),
     },
-    async ({ ref, selector, session_id = "default" }) => {
-      const session = await browserManager.getSession(session_id);
-      const res = await executeCheck(session, { ref, selector }, true);
+    async (args) => {
+      const session = await browserManager.getSession(args.session_id || "default");
+      const ref = args.ref || args.target?.ref;
+      const selector = args.selector || args.target?.selector;
+      const res = await executeCheck(session, { ref, selector }, args.checked ?? true);
       return formatMcpResponse(res);
     }
   );
