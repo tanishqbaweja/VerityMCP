@@ -74,9 +74,7 @@ export class WorkspaceManager {
     };
 
     this.activeWorkspaces.set(id, workspace);
-    if (!this.defaultWorkspaceId) {
-      this.defaultWorkspaceId = id;
-    }
+    this.defaultWorkspaceId = id;
 
     const git = {
       branch: gitRes.data?.branch || "none",
