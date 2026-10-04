@@ -144,7 +144,7 @@ export class OAuthProvider {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>DevSpace 4.0 Authorization</title>
+  <title>VerityMCP Authorization</title>
   <style>
     body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0b0f19; color: #f8fafc; display: flex; align-items: center; justify-content: center; height: 100vh; margin: 0; }
     .card { background: #131b2e; padding: 36px; border-radius: 12px; width: 100%; max-width: 420px; box-shadow: 0 10px 25px rgba(0,0,0,0.6); border: 1px solid #1e293b; }
@@ -158,8 +158,8 @@ export class OAuthProvider {
 </head>
 <body>
   <div class="card">
-    <h2>DevSpace 4.0</h2>
-    <p>Authorize your AI coding agent (ChatGPT / Claude) to access your local engineering workspace with verified tools.</p>
+    <h2>VerityMCP</h2>
+    <p>Authorize ChatGPT to access your local engineering workspace with verified tools.</p>
     <form method="POST" action="/oauth/authorize">
       <input type="hidden" name="client_id" value="${clientId}">
       <input type="hidden" name="redirect_uri" value="${redirectUri}">

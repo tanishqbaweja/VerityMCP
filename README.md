@@ -1,13 +1,13 @@
-# VerityMCP: Connect ChatGPT Web & Claude to Your Local Computer
+# VerityMCP: Connect ChatGPT Web Directly to Your Local Computer
 
 [![MCP Protocol](https://img.shields.io/badge/MCP-Streamable%20HTTP%20%2B%20SSE-blue.svg)](https://modelcontextprotocol.io)
-[![Client Support](https://img.shields.io/badge/Clients-ChatGPT%20Web%20%7C%20Claude%20%7C%20Cursor-green.svg)](https://openai.com)
+[![Client Support](https://img.shields.io/badge/Client-ChatGPT%20Web-green.svg)](https://chatgpt.com)
 [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-orange.svg)](https://nodejs.org)
 [![Tools](https://img.shields.io/badge/Tools-65%20Verified%20Tools-purple.svg)](#complete-65-tool-reference)
 [![License](https://img.shields.io/badge/License-MIT-brightgreen.svg)](LICENSE)
 
-> **Connect ChatGPT Web Chat, Claude, and autonomous AI agents directly to your local computer.**  
-> Execute terminal commands, edit local files, automate Playwright browsers, inspect desktop windows, and run tests—backed by an ironclad **Verification Engine** that guarantees an agent never hallucinates a successful action.
+> **Connect ChatGPT Web Chat directly to your local computer.**  
+> Execute terminal commands, edit local files, automate Playwright browsers, inspect desktop windows, and run tests—backed by an ironclad **Verification Engine** that guarantees ChatGPT never hallucinates a successful action.
 
 ---
 
@@ -56,11 +56,11 @@ ChatGPT now interacts with your real local environment in real time, with mathem
 
 ## 🔍 Why Normal MCP Servers Fail (And How VerityMCP Solves It)
 
-Standard MCP servers provide naive wrappers around `fs.writeFile` or `child_process.exec`. When autonomous agents like ChatGPT or Claude use them, they constantly hallucinate success:
+Standard MCP servers provide naive wrappers around `fs.writeFile` or `child_process.exec`. When autonomous agents in ChatGPT use them, they constantly hallucinate success:
 
 ```
-[Agent asks to update file]
-Naive MCP Server: "Success!" ───► Agent believes file was changed.
+[ChatGPT asks to update file]
+Naive MCP Server: "Success!" ───► ChatGPT believes file was changed.
 Reality: Hunks did not match, disk file unchanged, build fails later, agent gets stuck in a loop.
 ```
 
@@ -82,14 +82,12 @@ VerityMCP enforces **mandatory pre- and post-condition verification** on every o
 
 ## 🏛️ Architecture
 
-VerityMCP acts as the secure, high-integrity bridge between remote LLMs and your local machine:
+VerityMCP acts as the secure, high-integrity bridge between ChatGPT and your local machine:
 
 ```mermaid
 flowchart TD
-    subgraph Remote["Cloud AI Hosts"]
-        GPT["ChatGPT Web Chat"]
-        Claude["Claude Desktop / Web"]
-        Agent["Autonomous Coding Agents"]
+    subgraph Remote["OpenAI Cloud"]
+        GPT["ChatGPT Web Chat (chatgpt.com)"]
     end
 
     subgraph Transport["Secure Transport"]
@@ -113,9 +111,6 @@ flowchart TD
     end
 
     GPT -->|Secure HTTPS| Tunnel
-    Claude -->|Direct HTTP / SSE| LocalSSE
-    Agent -->|Direct HTTP / SSE| LocalSSE
-
     Tunnel --> LocalSSE
     LocalSSE --> Auth
     Auth --> Router
@@ -213,9 +208,9 @@ VerityMCP exposes a unified, production-ready tool surface organized across 12 e
 
 ---
 
-## 💻 Client Configuration Guides
+## 💻 Configuration Guides
 
-### 1. ChatGPT Web Setup
+### 1. ChatGPT Web Setup (Recommended)
 1. Launch VerityMCP with `start.bat`.
 2. Copy the generated Cloudflare URL (`https://<subdomain>.trycloudflare.com/mcp`).
 3. In ChatGPT Web, navigate to **Settings** → **Connected Apps** → **Add Server**.
@@ -224,46 +219,10 @@ VerityMCP exposes a unified, production-ready tool surface organized across 12 e
    - **Authentication**: Bearer Token
    - **Token**: Copy from your VerityMCP console or `~/.devspace/auth.json`.
 
-### 2. Claude Desktop Setup
-Add VerityMCP to your `claude_desktop_config.json`:
-
-* **Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
-* **macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
-
-```json
-{
-  "mcpServers": {
-    "verity": {
-      "command": "node",
-      "args": [
-        "H:\\Github Repositories\\devspace 4.0\\dist\\cli.js",
-        "serve",
-        "--port",
-        "7980"
-      ]
-    }
-  }
-}
-```
-
-Or connect via Streamable HTTP:
-```json
-{
-  "mcpServers": {
-    "verity-http": {
-      "url": "http://127.0.0.1:7980/mcp",
-      "headers": {
-        "Authorization": "Bearer YOUR_OWNER_TOKEN"
-      }
-    }
-  }
-}
-```
-
-### 3. Cursor & Antigravity IDE Setup
-In your editor's MCP settings, add:
-- **Type**: `command`
+### 2. Local IDE & Agent Setup
+To run VerityMCP locally with standard MCP clients:
 - **Command**: `node "H:/Github Repositories/devspace 4.0/dist/cli.js" serve --port 7980`
+- **HTTP / SSE Endpoint**: `http://127.0.0.1:7980/mcp`
 
 ---
 
@@ -273,8 +232,8 @@ VerityMCP runs with access to your local machine. We treat security as a first-c
 
 1. **Approved Roots Boundary**: File operations are strictly confined within configured directory roots. Attempting path traversal outside allowed boundaries is immediately rejected.
 2. **Owner Token Authentication**: The HTTP/SSE endpoint requires Bearer authentication based on RFC 9728 and RFC 8414 standards.
-3. **User-Controlled Tunnel**: Tunnels run via Cloudflare's quick tunnel service or local loopback. DevSpace does not store your credentials on third-party servers.
-4. **Isolated Worktrees**: When asking agents to make large architectural changes, use `worktree_create` to ensure the agent works in an isolated Git worktree without touching your main working directory.
+3. **User-Controlled Tunnel**: Tunnels run via Cloudflare's quick tunnel service or local loopback. VerityMCP does not store your credentials on third-party servers.
+4. **Isolated Worktrees**: When asking ChatGPT to make large architectural changes, use `worktree_create` to ensure work happens in an isolated Git worktree without touching your main working directory.
 
 ---
 
@@ -300,8 +259,8 @@ Test coverage includes:
 ### Can ChatGPT Web really edit files on my local Windows PC?
 **Yes.** By using the Model Context Protocol (MCP) and a secure tunnel (such as Cloudflare or local reverse proxy), ChatGPT Web can call VerityMCP tools running on your machine to read files, write code, run build scripts, and verify tests.
 
-### How is VerityMCP different from standard Claude Desktop MCP servers?
-Standard MCP servers are fire-and-forget: they run a command and assume it succeeded. If a file edit doesn't apply cleanly or a test hangs, the model gets confused and hallucinates. **VerityMCP enforces mathematical verification**—reading back disk bytes via SHA-256 and testing live DOM states before confirming success.
+### How is VerityMCP different from standard MCP servers?
+Standard MCP servers are fire-and-forget: they run a command and assume it succeeded. If a file edit doesn't apply cleanly or a test hangs, ChatGPT gets confused and hallucinates. **VerityMCP enforces mathematical verification**—reading back disk bytes via SHA-256 and testing live DOM states before confirming success.
 
 ### Do I need to open firewall ports or have a public static IP?
 **No.** `start.bat` launches an encrypted Cloudflare Tunnel (`cloudflared`) that establishes an outbound HTTPS tunnel. No port forwarding, DNS configuration, or firewall changes are required.

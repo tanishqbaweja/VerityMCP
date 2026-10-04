@@ -78,7 +78,7 @@ if ($ownerToken) {
 }
 Write-Host "==========================================================" -ForegroundColor Green
 Write-Host ""
-Write-Host "Next Steps in ChatGPT / Claude / MCP Client:" -ForegroundColor White
+Write-Host "Next Steps in ChatGPT Web:" -ForegroundColor White
 Write-Host "1. Paste '$mcpUrl' into your MCP Client." -ForegroundColor White
 Write-Host "2. When prompted for authorization, enter the Owner Password above." -ForegroundColor White
 Write-Host "3. Start coding! VerityMCP provides verified actions, first-class browser automation, and 65 tools." -ForegroundColor White
