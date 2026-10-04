@@ -1,4 +1,4 @@
-import type { BrowserSession } from "./browser_manager.js";
+import { browserManager, type BrowserSession } from "./browser_manager.js";
 import type { StandardToolResponse } from "../types/index.js";
 
 export interface ElementSnapshotInfo {
@@ -28,7 +28,7 @@ export async function takeBrowserSnapshot(
   session: BrowserSession
 ): Promise<StandardToolResponse<BrowserSnapshotData>> {
   const startTime = Date.now();
-  const page = session.page;
+  const page = browserManager.getActivePage(session);
 
   let url = "about:blank";
   let title = "";
@@ -93,11 +93,23 @@ export async function takeBrowserSnapshot(
       htmlEl.setAttribute("data-devspace-ref", `e${index}`);
 
       const inputEl = el as HTMLInputElement;
+      let associatedLabel = "";
+      if (inputEl.labels && inputEl.labels.length > 0) {
+        associatedLabel = (inputEl.labels[0].textContent || "").trim();
+      } else if (inputEl.id) {
+        const lbl = document.querySelector(`label[for="${inputEl.id}"]`);
+        if (lbl) associatedLabel = (lbl.textContent || "").trim();
+      }
+      if (!associatedLabel && htmlEl.parentElement) {
+        const lbl = htmlEl.parentElement.querySelector("label");
+        if (lbl) associatedLabel = (lbl.textContent || "").trim();
+      }
+
       results.push({
         tagName: el.tagName.toLowerCase(),
         role: el.getAttribute("role") || "",
         type: inputEl.type || "",
-        name: el.getAttribute("name") || el.getAttribute("aria-label") || "",
+        name: el.getAttribute("name") || el.getAttribute("aria-label") || associatedLabel,
         text: (el.textContent || "").trim().slice(0, 100),
         placeholder: inputEl.placeholder || "",
         value: inputEl.value !== undefined ? String(inputEl.value) : "",

@@ -2,7 +2,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { randomUUID } from "node:crypto";
-import type { BrowserSession } from "./browser_manager.js";
+import { browserManager, type BrowserSession } from "./browser_manager.js";
 import { calculateSha256, verifyFileExistence } from "../verification/index.js";
 import type { StandardToolResponse } from "../types/index.js";
 
@@ -30,7 +30,7 @@ export async function executeBrowserScreenshot(
 }> {
   const startTime = Date.now();
   const { session, outputPath, fullPage = false } = options;
-  const page = session.page;
+  const page = browserManager.getActivePage(session);
 
   const targetPath =
     outputPath ||

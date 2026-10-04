@@ -62,7 +62,7 @@ It combines:
 
 ---
 
-## Complete Toolset (32 Verified Tools)
+## Complete Toolset (Unified 65-Tool Surface)
 
 ### 1. Workspace
 - `open_workspace`: Opens a workspace root. In a single call, returns architectural repo map, git branch/clean status, detected shells, package scripts, and available skills.
@@ -79,37 +79,73 @@ It combines:
 - `locate_files`: Fast file locator by glob pattern or name substring.
 - `file_metadata`: Inspects file stats, SHA-256 hash, line count, and binary status.
 
-### 3. Code Intelligence
+### 3. Code Search & Structural Intelligence
 - `search_code`: High-speed code search powered by native ripgrep with line numbers and file matching.
 - `get_outline`: Structural symbol extraction (functions, classes, interfaces, methods, types) from code files.
 
-### 4. Shell & Processes
+### 4. Language Server Protocol (LSP) Tools
+- `lsp_goto_definition`: Finds definition locations for a symbol at a given line and character.
+- `lsp_find_references`: Finds all references to a symbol across the project.
+- `lsp_hover`: Fetches documentation and type signatures at cursor position.
+- `lsp_document_symbols`: Extracts hierarchical symbols in a document with configurable verbosity (`outline`, `normal`, `full`).
+- `lsp_workspace_symbols`: Searches symbols project-wide matching a query.
+- `lsp_type_definition`: Navigates directly to the type definition of a symbol.
+
+### 5. Jupyter Notebook Engine
+- `read_notebook`: Reads `.ipynb` files structurally into markdown and code cells with execution counts and outputs.
+- `edit_notebook`: Atomically edits, replaces, inserts, or deletes notebook cells with post-mutation schema validation.
+
+### 6. Shell, Terminal & Process Runtime
 - `exec_command`: Runs commands in explicit shells (`powershell`, `cmd`, `git-bash`). Yields session ID if running longer than `yield_ms`.
 - `read_process_output`: Streams stdout/stderr chunks from running or completed processes using pagination cursors.
 - `write_stdin`: Sends interactive input to running process session stdin.
 - `interrupt_process`: Terminates process tree cleanly using Windows `taskkill` or SIGINT.
 
-### 5. Browser Automation (First-Class Playwright)
+### 7. Environment Detection
+- `get_environment`: Deep audit of system toolchains (Node, pnpm, npm, Python, uv, Git, Docker, shells).
+
+### 8. Browser Automation (First-Class Playwright)
 - `browser_navigate`: Navigates persistent browser session to a URL and verifies load status.
-- `browser_snapshot`: Builds an accessibility tree with stable element references (`[ref=e1]`) and version tracking.
+- `browser_snapshot`: Builds an accessibility tree with stable element references (`[ref=e1]`), names, and version tracking.
 - `browser_click`: Clicks element by reference or selector.
+- `browser_double_click`: Double clicks element.
+- `browser_hover`: Hovers over element.
 - `browser_fill`: Fills input and performs mandatory DOM readback verification.
 - `browser_check`: Checks or unchecks a checkbox with mandatory DOM `.isChecked()` verification.
+- `browser_select_option`: Selects option from dropdown.
+- `browser_upload_file`: Uploads files to file input elements.
 - `browser_press_key`: Presses keyboard keys (e.g. `Enter`, `Tab`).
+- `browser_evaluate`: Evaluates JavaScript inside the page context safely.
+- `browser_pdf`: Prints page to PDF file on disk.
 - `browser_screenshot`: Captures viewport or full page, verifies disk file, and returns base64 image block for visual inspection.
+- `browser_console_logs`: Inspects real-time browser console logs and errors.
+- `browser_network_requests`: Inspects HTTP requests made by the page.
+- `browser_close`: Closes browser session cleanly.
 
-### 6. Git Engine
+### 9. Desktop Automation (Windows-First)
+- `screenshot_desktop`: Captures full screen or region via Windows GDI and returns direct base64 image block.
+- `list_windows`: Enumerates open desktop windows with handles, titles, and processes.
+- `focus_window`: Brings specific window to foreground.
+
+### 10. Git & Worktree Engine
 - `git_status`: Checks git working tree status and branch name.
 - `git_diff`: Returns git diff against HEAD or specified ref.
 - `show_changes`: Shows unified summary of all uncommitted modifications and diffs.
 - `revert_changes`: Reverts uncommitted changes with mandatory post-revert git status verification.
+- `worktree_create`: Creates isolated git worktree branch.
+- `worktree_list`: Lists all active git worktrees.
+- `worktree_remove`: Removes worktree with dirty-state safety guard.
 
-### 7. Tasks & Planning
+### 11. Tasks, Planning & Bounded Subagents
 - `task_create`: Creates a new task in the planning store.
 - `task_update`: Updates task status (`pending`, `in_progress`, `completed`, `failed`).
 - `task_list`: Lists all tasks and active planning state.
+- `delegate_subagent`: Dispatches bounded subagent with persona (`explore`, `coding`, `review`, `verification`, `planning`).
+- `list_subagents`: Inspects running and finished subagents.
+- `enter_plan_mode`: Enters read-only planning mode.
+- `exit_plan_mode`: Returns from planning mode to execution mode.
 
-### 8. Diagnostics & Observability
+### 12. Diagnostics & Observability
 - `devspace_diagnostics`: Returns system health diagnostics, shell availability, browser status, and tool reliability audit logs.
 
 ---

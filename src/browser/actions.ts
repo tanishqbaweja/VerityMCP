@@ -1,4 +1,10 @@
+import fs from "node:fs/promises";
+import path from "node:path";
+import os from "node:os";
+import { randomUUID } from "node:crypto";
 import type { BrowserSession } from "./browser_manager.js";
+import { browserManager } from "./browser_manager.js";
+import { verifyFileExistence } from "../verification/index.js";
 import type { StandardToolResponse } from "../types/index.js";
 
 function resolveTarget(
@@ -26,7 +32,7 @@ export async function executeNavigate(
   url: string
 ): Promise<StandardToolResponse<{ url: string; title: string; status: number }>> {
   const startTime = Date.now();
-  const page = session.page;
+  const page = browserManager.getActivePage(session);
 
   try {
     const response = await page.goto(url, {
@@ -66,12 +72,98 @@ export async function executeNavigate(
   }
 }
 
+export async function executeReload(
+  session: BrowserSession
+): Promise<StandardToolResponse<{ url: string }>> {
+  const startTime = Date.now();
+  const page = browserManager.getActivePage(session);
+  try {
+    await page.reload({ waitUntil: "domcontentloaded" });
+    const currentUrl = page.url();
+    return {
+      success: true,
+      action: "page_reload",
+      text: `Page reloaded. Current URL: ${currentUrl}`,
+      verification: {
+        performed: true,
+        passed: true,
+        method: "page_reload_success",
+        details: { url: currentUrl },
+      },
+      data: { url: currentUrl },
+      durationMs: Date.now() - startTime,
+    };
+  } catch (err: any) {
+    return {
+      success: false,
+      action: "page_reload",
+      text: `Reload failed: ${err.message}`,
+      verification: { performed: true, passed: false, method: "page_reload", error: err.message },
+      durationMs: Date.now() - startTime,
+    };
+  }
+}
+
+export async function executeGoBack(
+  session: BrowserSession
+): Promise<StandardToolResponse<{ url: string }>> {
+  const startTime = Date.now();
+  const page = browserManager.getActivePage(session);
+  try {
+    await page.goBack();
+    const currentUrl = page.url();
+    return {
+      success: true,
+      action: "page_back",
+      text: `Navigated back to: ${currentUrl}`,
+      verification: { performed: true, passed: true, method: "page_history_back", details: { url: currentUrl } },
+      data: { url: currentUrl },
+      durationMs: Date.now() - startTime,
+    };
+  } catch (err: any) {
+    return {
+      success: false,
+      action: "page_back",
+      text: `History back failed: ${err.message}`,
+      verification: { performed: true, passed: false, method: "page_history_back", error: err.message },
+      durationMs: Date.now() - startTime,
+    };
+  }
+}
+
+export async function executeGoForward(
+  session: BrowserSession
+): Promise<StandardToolResponse<{ url: string }>> {
+  const startTime = Date.now();
+  const page = browserManager.getActivePage(session);
+  try {
+    await page.goForward();
+    const currentUrl = page.url();
+    return {
+      success: true,
+      action: "page_forward",
+      text: `Navigated forward to: ${currentUrl}`,
+      verification: { performed: true, passed: true, method: "page_history_forward", details: { url: currentUrl } },
+      data: { url: currentUrl },
+      durationMs: Date.now() - startTime,
+    };
+  } catch (err: any) {
+    return {
+      success: false,
+      action: "page_forward",
+      text: `History forward failed: ${err.message}`,
+      verification: { performed: true, passed: false, method: "page_history_forward", error: err.message },
+      durationMs: Date.now() - startTime,
+    };
+  }
+}
+
 export async function executeClick(
   session: BrowserSession,
   target: { ref?: string; selector?: string }
 ): Promise<StandardToolResponse<{ target: string; currentUrl: string }>> {
   const startTime = Date.now();
-  const page = session.page;
+  const page = browserManager.getActivePage(session);
 
   let selector: string;
   try {
@@ -95,8 +187,6 @@ export async function executeClick(
     const locator = page.locator(selector).first();
     await locator.waitFor({ state: "visible", timeout: 10000 });
     await locator.click();
-
-    // Brief settling wait for microtasks/animations
     await page.waitForTimeout(100);
 
     const currentUrl = page.url();
@@ -129,13 +219,71 @@ export async function executeClick(
   }
 }
 
+export async function executeDoubleClick(
+  session: BrowserSession,
+  target: { ref?: string; selector?: string }
+): Promise<StandardToolResponse<{ target: string }>> {
+  const startTime = Date.now();
+  const page = browserManager.getActivePage(session);
+  const selector = resolveTarget(session, target);
+  try {
+    const locator = page.locator(selector).first();
+    await locator.dblclick();
+    return {
+      success: true,
+      action: `browser_double_click ${target.ref ? `[ref=${target.ref}]` : selector}`,
+      text: `Double-clicked element successfully.`,
+      verification: { performed: true, passed: true, method: "playwright_dblclick" },
+      data: { target: selector },
+      durationMs: Date.now() - startTime,
+    };
+  } catch (err: any) {
+    return {
+      success: false,
+      action: `browser_double_click`,
+      text: `Double-click failed: ${err.message}`,
+      verification: { performed: true, passed: false, method: "playwright_dblclick", error: err.message },
+      durationMs: Date.now() - startTime,
+    };
+  }
+}
+
+export async function executeHover(
+  session: BrowserSession,
+  target: { ref?: string; selector?: string }
+): Promise<StandardToolResponse<{ target: string }>> {
+  const startTime = Date.now();
+  const page = browserManager.getActivePage(session);
+  const selector = resolveTarget(session, target);
+  try {
+    const locator = page.locator(selector).first();
+    await locator.hover();
+    return {
+      success: true,
+      action: `browser_hover ${target.ref ? `[ref=${target.ref}]` : selector}`,
+      text: `Hovered over element successfully.`,
+      verification: { performed: true, passed: true, method: "playwright_hover" },
+      data: { target: selector },
+      durationMs: Date.now() - startTime,
+    };
+  } catch (err: any) {
+    return {
+      success: false,
+      action: `browser_hover`,
+      text: `Hover failed: ${err.message}`,
+      verification: { performed: true, passed: false, method: "playwright_hover", error: err.message },
+      durationMs: Date.now() - startTime,
+    };
+  }
+}
+
 export async function executeFill(
   session: BrowserSession,
   target: { ref?: string; selector?: string },
   value: string
 ): Promise<StandardToolResponse<{ target: string; verifiedValue: string }>> {
   const startTime = Date.now();
-  const page = session.page;
+  const page = browserManager.getActivePage(session);
 
   let selector: string;
   try {
@@ -159,6 +307,7 @@ export async function executeFill(
     const locator = page.locator(selector).first();
     await locator.waitFor({ state: "visible", timeout: 10000 });
     await locator.fill(value);
+    await locator.focus();
 
     // MANDATORY DOM READBACK VERIFICATION
     const actualValue = await locator.inputValue();
@@ -215,7 +364,7 @@ export async function executeCheck(
   checked = true
 ): Promise<StandardToolResponse<{ target: string; isChecked: boolean }>> {
   const startTime = Date.now();
-  const page = session.page;
+  const page = browserManager.getActivePage(session);
 
   let selector: string;
   try {
@@ -289,13 +438,81 @@ export async function executeCheck(
   }
 }
 
+export async function executeSelect(
+  session: BrowserSession,
+  target: { ref?: string; selector?: string },
+  value: string
+): Promise<StandardToolResponse<{ target: string; selectedValue: string }>> {
+  const startTime = Date.now();
+  const page = browserManager.getActivePage(session);
+  const selector = resolveTarget(session, target);
+  try {
+    const locator = page.locator(selector).first();
+    await locator.selectOption(value);
+    const actual = await locator.inputValue();
+    return {
+      success: true,
+      action: `browser_select "${value}"`,
+      text: `Selected option "${value}" (verified: "${actual}").`,
+      verification: { performed: true, passed: true, method: "dom_select_readback", details: { actual } },
+      data: { target: selector, selectedValue: actual },
+      durationMs: Date.now() - startTime,
+    };
+  } catch (err: any) {
+    return {
+      success: false,
+      action: "browser_select",
+      text: `Select option failed: ${err.message}`,
+      verification: { performed: true, passed: false, method: "dom_select", error: err.message },
+      durationMs: Date.now() - startTime,
+    };
+  }
+}
+
+export async function executeUpload(
+  session: BrowserSession,
+  target: { ref?: string; selector?: string },
+  filePaths: string[]
+): Promise<StandardToolResponse<{ target: string; files: string[] }>> {
+  const startTime = Date.now();
+  const page = browserManager.getActivePage(session);
+  const selector = resolveTarget(session, target);
+  try {
+    const locator = page.locator(selector).first();
+    await locator.setInputFiles(filePaths);
+    return {
+      success: true,
+      action: `browser_upload`,
+      text: `Uploaded file(s): ${filePaths.join(", ")}`,
+      verification: { performed: true, passed: true, method: "playwright_setInputFiles" },
+      data: { target: selector, files: filePaths },
+      durationMs: Date.now() - startTime,
+    };
+  } catch (err: any) {
+    return {
+      success: false,
+      action: "browser_upload",
+      text: `File upload failed: ${err.message}`,
+      verification: { performed: true, passed: false, method: "playwright_setInputFiles", error: err.message },
+      durationMs: Date.now() - startTime,
+    };
+  }
+}
+
 export async function executePressKey(
   session: BrowserSession,
-  key: string
+  key: string,
+  target?: { ref?: string; selector?: string }
 ): Promise<StandardToolResponse<{ key: string }>> {
   const startTime = Date.now();
+  const page = browserManager.getActivePage(session);
   try {
-    await session.page.keyboard.press(key);
+    if (target && (target.ref || target.selector)) {
+      const selector = resolveTarget(session, target);
+      await page.locator(selector).first().press(key);
+    } else {
+      await page.keyboard.press(key);
+    }
     return {
       success: true,
       action: `browser_press_key "${key}"`,
@@ -323,4 +540,86 @@ export async function executePressKey(
       durationMs: Date.now() - startTime,
     };
   }
+}
+
+export async function executeEval(
+  session: BrowserSession,
+  script: string
+): Promise<StandardToolResponse<{ result: any }>> {
+  const startTime = Date.now();
+  const page = browserManager.getActivePage(session);
+  try {
+    const result = await page.evaluate(script);
+    return {
+      success: true,
+      action: `browser_eval`,
+      text: `Evaluation result: ${JSON.stringify(result, null, 2)}`,
+      verification: { performed: true, passed: true, method: "page_evaluate" },
+      data: { result },
+      durationMs: Date.now() - startTime,
+    };
+  } catch (err: any) {
+    return {
+      success: false,
+      action: "browser_eval",
+      text: `Evaluation failed: ${err.message}`,
+      verification: { performed: true, passed: false, method: "page_evaluate", error: err.message },
+      durationMs: Date.now() - startTime,
+    };
+  }
+}
+
+export async function executePdf(
+  session: BrowserSession,
+  outputPath?: string
+): Promise<StandardToolResponse<{ filePath: string; sizeBytes: number }>> {
+  const startTime = Date.now();
+  const page = browserManager.getActivePage(session);
+  const targetPath = outputPath || path.join(os.tmpdir(), `devspace4_doc_${randomUUID().slice(0, 8)}.pdf`);
+  try {
+    await page.pdf({ path: targetPath, format: "A4" });
+    const stat = await fs.stat(targetPath);
+    return {
+      success: true,
+      action: "browser_pdf",
+      text: `PDF document saved to ${targetPath} (${stat.size} bytes).`,
+      verification: { performed: true, passed: true, method: "fs_stat_exists", details: { sizeBytes: stat.size } },
+      data: { filePath: targetPath, sizeBytes: stat.size },
+      durationMs: Date.now() - startTime,
+    };
+  } catch (err: any) {
+    return {
+      success: false,
+      action: "browser_pdf",
+      text: `PDF generation failed: ${err.message}`,
+      verification: { performed: true, passed: false, method: "page_pdf", error: err.message },
+      durationMs: Date.now() - startTime,
+    };
+  }
+}
+
+export function executeGetConsole(session: BrowserSession): StandardToolResponse<{ logs: Array<{ type: string; text: string; timestamp: number }> }> {
+  const logs = [...session.consoleLogs];
+  const lines = logs.map((l) => `[${l.type.toUpperCase()}] ${l.text}`);
+  const text = logs.length > 0 ? `Captured Console Logs (${logs.length}):\n${lines.join("\n")}` : "No console logs captured.";
+  return {
+    success: true,
+    action: "browser_console",
+    text,
+    verification: { performed: true, passed: true, method: "console_buffer_read", details: { count: logs.length } },
+    data: { logs },
+  };
+}
+
+export function executeGetNetwork(session: BrowserSession): StandardToolResponse<{ events: Array<{ method: string; url: string; status?: number; failed?: boolean }> }> {
+  const events = [...session.networkEvents];
+  const lines = events.map((e) => `[${e.method}] ${e.url} ${e.failed ? "(FAILED)" : e.status ? `(HTTP ${e.status})` : ""}`);
+  const text = events.length > 0 ? `Captured Network Events (${events.length}):\n${lines.join("\n")}` : "No network events captured.";
+  return {
+    success: true,
+    action: "browser_network",
+    text,
+    verification: { performed: true, passed: true, method: "network_buffer_read", details: { count: events.length } },
+    data: { events },
+  };
 }
