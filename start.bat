@@ -1,9 +1,9 @@
 @echo off
-title DevSpace 4.0 (Verified Computer Engineering Architecture)
+title VerityMCP (Verified Local Computer Engineering Layer)
 cd /d "%~dp0"
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0scripts\launcher.ps1"
 if %ERRORLEVEL% NEQ 0 (
     echo.
-    echo DevSpace 4.0 stopped with exit code %ERRORLEVEL%.
+    echo VerityMCP stopped with exit code %ERRORLEVEL%.
     pause
 )
