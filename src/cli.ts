@@ -34,7 +34,9 @@ export async function main() {
   // Parse basic arguments
   const args = process.argv.slice(2);
   for (let i = 0; i < args.length; i++) {
-    if (args[i] === "--port" && args[i + 1]) {
+    if (args[i] === "serve") {
+      continue;
+    } else if (args[i] === "--port" && args[i + 1]) {
       config.port = parseInt(args[i + 1], 10);
       i++;
     } else if (args[i] === "--host" && args[i + 1]) {
@@ -42,6 +44,9 @@ export async function main() {
       i++;
     } else if (args[i] === "--token" && args[i + 1]) {
       config.ownerToken = args[i + 1];
+      i++;
+    } else if (args[i] === "--public-base-url" && args[i + 1]) {
+      config.publicBaseUrl = args[i + 1];
       i++;
     }
   }
@@ -61,6 +66,7 @@ export async function main() {
   const server = createServer(instance.app);
 
   server.listen(config.port, config.host, () => {
+    const mcpUrl = config.publicBaseUrl ? `${config.publicBaseUrl}/mcp` : `http://${config.host}:${config.port}/mcp`;
     console.log(`
 ============================================================
               DEVSPACE 4.0 - LOCAL MCP SERVER
@@ -68,7 +74,8 @@ export async function main() {
 Status:         ONLINE & READY
 Port:           ${config.port}
 Host:           ${config.host}
-Endpoint (MCP): http://${config.host}:${config.port}/mcp
+Endpoint (MCP): ${mcpUrl}
+${config.publicBaseUrl ? `Public Tunnel:  ${config.publicBaseUrl}` : ""}
 Health Check:   http://${config.host}:${config.port}/healthz
 Default Shell:  ${shells.defaultShell} (${shells.powershell.available ? "PowerShell" : "cmd"})
 Git Bash:       ${shells.gitBash.available ? shells.gitBash.description : "Not detected"}
