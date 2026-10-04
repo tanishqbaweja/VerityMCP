@@ -1,12 +1,28 @@
 {
-  "name": "devspace-4.0",
-  "version": "4.0.0",
-  "description": "DevSpace 4.0: Next-generation verified local development and computer engineering MCP server.",
+  "name": "verity-mcp",
+  "version": "1.0.0",
+  "description": "Connect ChatGPT Web Chat, Claude, and AI agents directly to your local computer. Verified local file editing, terminal execution, Playwright browser automation, and desktop control via Model Context Protocol (MCP).",
   "type": "module",
-  "main": "dist/server.js",
+  "main": "dist/cli.js",
   "bin": {
-    "devspace4": "bin/devspace.js"
+    "verity": "dist/cli.js"
   },
+  "keywords": [
+    "chatgpt",
+    "mcp",
+    "model-context-protocol",
+    "chatgpt-web",
+    "local-computer",
+    "coding-agent",
+    "playwright",
+    "browser-automation",
+    "developer-tools",
+    "windows",
+    "claude",
+    "claude-desktop",
+    "ai-agent",
+    "autonomous-agent"
+  ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "dev": "tsx src/cli.ts serve",

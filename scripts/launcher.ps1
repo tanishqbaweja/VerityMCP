@@ -1,4 +1,4 @@
-# DevSpace 4.0 Launcher with Cloudflare Tunnel & Verification Engine
+# VerityMCP Launcher with Cloudflare Tunnel & Verification Engine
 $ErrorActionPreference = "Stop"
 
 $cloudflaredPath = "C:\Program Files (x86)\cloudflared\cloudflared.exe"
@@ -6,16 +6,16 @@ if (-not (Test-Path $cloudflaredPath)) {
     $cloudflaredPath = "cloudflared"
 }
 
-# Dedicated port for DevSpace 4.0 (never touches DevSpace 1.0 on 7676, DevSpace 2.0 on 7878, or DevSpace 3.0 on 7979)
+# Dedicated port for VerityMCP (never touches legacy devspace servers)
 $port = 7980
 $portBusy = Get-NetTCPConnection -LocalPort 7980 -State Listen -ErrorAction SilentlyContinue
 if ($portBusy) {
-    Write-Host "[Launcher] Port 7980 is currently in use. DevSpace 4.0 will use port 7981." -ForegroundColor Yellow
+    Write-Host "[Launcher] Port 7980 is currently in use. VerityMCP will use port 7981." -ForegroundColor Yellow
     $port = 7981
 }
 
 Write-Host "==========================================================" -ForegroundColor Cyan
-Write-Host "    DEVSPACE 4.0 (Verified Computer Engineering Layer)    " -ForegroundColor Cyan
+Write-Host "    VERITY MCP (Verified Local Computer Engineering Layer)    " -ForegroundColor Cyan
 Write-Host "==========================================================" -ForegroundColor Cyan
 Write-Host "[Launcher] Starting Cloudflare tunnel on port $port..." -ForegroundColor Gray
 
@@ -81,13 +81,13 @@ Write-Host ""
 Write-Host "Next Steps in ChatGPT / Claude / MCP Client:" -ForegroundColor White
 Write-Host "1. Paste '$mcpUrl' into your MCP Client." -ForegroundColor White
 Write-Host "2. When prompted for authorization, enter the Owner Password above." -ForegroundColor White
-Write-Host "3. Start coding! DevSpace 4.0 provides verified actions, first-class browser automation, and 65 tools." -ForegroundColor White
+Write-Host "3. Start coding! VerityMCP provides verified actions, first-class browser automation, and 65 tools." -ForegroundColor White
 Write-Host ""
-Write-Host "Starting DevSpace 4.0 server..." -ForegroundColor Gray
+Write-Host "Starting VerityMCP server..." -ForegroundColor Gray
 Write-Host ""
 
 try {
-    # Build and launch DevSpace 4.0 server
+    # Build and launch VerityMCP server
     $projectRoot = Split-Path -Parent $PSScriptRoot
     Set-Location $projectRoot
     Write-Host "[Launcher] Compiling TypeScript..." -ForegroundColor Gray

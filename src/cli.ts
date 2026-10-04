@@ -69,7 +69,7 @@ export async function main() {
     const mcpUrl = config.publicBaseUrl ? `${config.publicBaseUrl}/mcp` : `http://${config.host}:${config.port}/mcp`;
     console.log(`
 ============================================================
-              DEVSPACE 4.0 - LOCAL MCP SERVER
+       VERITY MCP - LOCAL COMPUTER RUNTIME FOR CHATGPT & CLAUDE
 ============================================================
 Status:         ONLINE & READY
 Port:           ${config.port}
