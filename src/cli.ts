@@ -69,7 +69,7 @@ export async function main() {
     const mcpUrl = config.publicBaseUrl ? `${config.publicBaseUrl}/mcp` : `http://${config.host}:${config.port}/mcp`;
     console.log(`
 ============================================================
-       VERITY MCP - LOCAL COMPUTER RUNTIME FOR CHATGPT & CLAUDE
+          VERITY MCP - LOCAL COMPUTER RUNTIME FOR CHATGPT
 ============================================================
 Status:         ONLINE & READY
 Port:           ${config.port}

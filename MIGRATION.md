@@ -68,9 +68,9 @@ DevSpace 4.0 was built around one non-negotiable principle:
 
 ## Client Configuration Migration
 
-To switch your MCP client configuration (e.g., ChatGPT, Claude Desktop, Antigravity, Cursor) from previous DevSpace versions to DevSpace 4.0:
+To switch your MCP client configuration (e.g., ChatGPT Web, Cursor) from previous DevSpace versions to VerityMCP:
 
-### 1. Claude Desktop / Antigravity MCP Config
+### 1. ChatGPT Web MCP Configuration
 
 Replace your existing server entry with DevSpace 4.0:
 

@@ -65,7 +65,7 @@ export function createDevSpaceApp(config: DevSpaceConfig): DevSpaceAppInstance {
   const jsonParser = express.json({ limit: "50mb" });
   const urlEncodedParser = express.urlencoded({ extended: true, limit: "50mb" });
 
-  // Stateless MCP handler for ChatGPT and Claude
+  // Stateless MCP handler for ChatGPT Web
   const mcpHandler = createMcpHandler(
     () => createDevSpace4McpServer(config),
     {

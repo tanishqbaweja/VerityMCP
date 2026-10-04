@@ -1,7 +1,7 @@
 {
   "name": "verity-mcp",
   "version": "1.0.0",
-  "description": "Connect ChatGPT Web Chat, Claude, and AI agents directly to your local computer. Verified local file editing, terminal execution, Playwright browser automation, and desktop control via Model Context Protocol (MCP).",
+  "description": "Connect ChatGPT Web Chat directly to your local computer. Verified local file editing, terminal execution, Playwright browser automation, and desktop control via Model Context Protocol (MCP).",
   "type": "module",
   "main": "dist/cli.js",
   "bin": {
@@ -12,14 +12,13 @@
     "mcp",
     "model-context-protocol",
     "chatgpt-web",
+    "chatgpt-desktop",
     "local-computer",
     "coding-agent",
     "playwright",
     "browser-automation",
     "developer-tools",
     "windows",
-    "claude",
-    "claude-desktop",
     "ai-agent",
     "autonomous-agent"
   ],
