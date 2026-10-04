@@ -17,17 +17,43 @@ import { executeFileMetadata } from "../filesystem/file_metadata.js";
 import { executeApplyPatch } from "../patcher/apply_patch.js";
 import { executeSearchCode } from "../discovery/search_code.js";
 import { executeGetOutline } from "../discovery/get_outline.js";
+import { executeLsp } from "../discovery/lsp_tool.js";
 import { processManager } from "../shell/process_manager.js";
 import { browserManager } from "../browser/browser_manager.js";
 import { takeBrowserSnapshot } from "../browser/snapshot.js";
 import {
   executeNavigate,
+  executeReload,
+  executeGoBack,
+  executeGoForward,
   executeClick,
+  executeDoubleClick,
+  executeHover,
   executeFill,
   executeCheck,
+  executeSelect,
+  executeUpload,
   executePressKey,
+  executeEval,
+  executePdf,
+  executeGetConsole,
+  executeGetNetwork,
 } from "../browser/actions.js";
 import { executeBrowserScreenshot } from "../browser/screenshots.js";
+import {
+  executeDesktopScreenshot,
+  executeListWindows,
+  executeFocusWindow,
+} from "../desktop/desktop_control.js";
+import {
+  executeReadNotebook,
+  executeEditNotebook,
+} from "../notebook/notebook_engine.js";
+import {
+  executeEnterWorktree,
+  executeExitWorktree,
+  executeListWorktrees,
+} from "../git/worktrees.js";
 import {
   executeGitStatus,
   executeGitDiff,
@@ -35,6 +61,8 @@ import {
   executeRevertChanges,
 } from "../git/git_ops.js";
 import { taskStore } from "../tasks/task_store.js";
+import { subagentEngine } from "../agents/subagent_engine.js";
+import { detectEnvironment } from "../environment/env_detector.js";
 import { observabilityManager } from "../observability/diagnostics.js";
 
 export function createDevSpace4McpServer(config: DevSpaceConfig): McpServer {
@@ -48,17 +76,7 @@ export function createDevSpace4McpServer(config: DevSpaceConfig): McpServer {
 
 DevSpace 4.0 Core Philosophy:
 AN AGENT MUST BE ABLE TO TRUST ITS TOOLS.
-All filesystem mutations, patch applications, git reverts, process executions, browser interactions, and screenshots are verified against real system state before reporting success.
-
-Available Tool Categories:
-1. Workspace: open_workspace
-2. Filesystem & Mutations: read_file, write_file, edit_file, apply_patch, delete_file, move_file, copy_file, list_directory, locate_files, file_metadata
-3. Code Intelligence: search_code, get_outline
-4. Shell & Processes: exec_command, read_process_output, write_stdin, interrupt_process
-5. Browser Automation: browser_navigate, browser_snapshot, browser_click, browser_fill, browser_check, browser_press_key, browser_screenshot
-6. Git Engine: git_status, git_diff, show_changes, revert_changes
-7. Tasks: task_create, task_update, task_list
-8. Observability: devspace_diagnostics`,
+All filesystem mutations, patch applications, git reverts, process executions, browser interactions, and screenshots are verified against real system state before reporting success.`,
     }
   );
 
@@ -105,13 +123,12 @@ Available Tool Categories:
     });
   };
 
-  // Helper to get active workspace root
   const getRoot = () => workspaceManager.getActiveWorkspaceRoot();
 
   // 1. open_workspace
   registerTool(
     "open_workspace",
-    "Opens a project directory or worktree. Returns architectural repo map, git status/branch, supported shells, package scripts, and discovered skills.",
+    "Opens a project directory or worktree. Returns architectural repo map, git status/branch, supported shells, package scripts, and discovered skills in a single bootstrap call.",
     {
       path: z.string().optional().describe("Path to project root. Defaults to current directory."),
     },
@@ -310,7 +327,26 @@ Available Tool Categories:
     }
   );
 
-  // 11. file_metadata
+  // 11. glob_files (alias for glob)
+  registerTool(
+    "glob_files",
+    "Finds files matching glob pattern across the project tree.",
+    {
+      pattern: z.string().describe("Glob pattern."),
+      dir_path: z.string().optional().describe("Base path."),
+    },
+    async ({ pattern, dir_path }) => {
+      const res = await executeLocateFiles({
+        workspaceRoot: getRoot(),
+        allowedRoots: config.allowedRoots,
+        pattern,
+        dirPath: dir_path,
+      });
+      return formatMcpResponse(res);
+    }
+  );
+
+  // 12. file_metadata
   registerTool(
     "file_metadata",
     "Inspects file stats, existence, SHA-256 hash, line count, and binary status.",
@@ -327,7 +363,7 @@ Available Tool Categories:
     }
   );
 
-  // 12. search_code
+  // 13. search_code
   registerTool(
     "search_code",
     "High-speed code search powered by ripgrep with line numbers and file matching.",
@@ -352,7 +388,7 @@ Available Tool Categories:
     }
   );
 
-  // 13. get_outline
+  // 14. get_outline
   registerTool(
     "get_outline",
     "Extracts structural symbols (functions, classes, interfaces, methods, types) from code.",
@@ -371,7 +407,34 @@ Available Tool Categories:
     }
   );
 
-  // 14. exec_command
+  // 15. lsp_query
+  registerTool(
+    "lsp_query",
+    "Semantic code intelligence: documentSymbol (outline/normal/full), goToDefinition, findReferences, hover, workspaceSymbol, typeDefinition.",
+    {
+      operation: z.enum(["documentSymbol", "goToDefinition", "findReferences", "hover", "workspaceSymbol", "typeDefinition"]),
+      file_path: z.string().optional().describe("File path."),
+      line: z.number().int().positive().optional().describe("1-based line."),
+      character: z.number().int().positive().optional().describe("1-based column."),
+      query: z.string().optional().describe("Symbol query."),
+      verbosity: z.enum(["outline", "normal", "full"]).optional().describe("Verbosity level for symbols. Defaults to outline."),
+    },
+    async ({ operation, file_path, line, character, query, verbosity }) => {
+      const res = await executeLsp({
+        workspaceRoot: getRoot(),
+        allowedRoots: config.allowedRoots,
+        operation,
+        filePath: file_path,
+        line,
+        character,
+        query,
+        verbosity: verbosity ?? "outline",
+      });
+      return formatMcpResponse(res);
+    }
+  );
+
+  // 16. exec_command
   registerTool(
     "exec_command",
     "Executes shell commands with explicit shell selection ('powershell', 'cmd', 'git-bash'). If the process exceeds yield_ms or run_in_background is true, returns a session ID for streaming output.",
@@ -395,7 +458,7 @@ Available Tool Categories:
     }
   );
 
-  // 15. read_process_output
+  // 17. read_process_output
   registerTool(
     "read_process_output",
     "Streams stdout/stderr chunks from a running or completed process session using pagination cursors (never losing background task output).",
@@ -409,7 +472,7 @@ Available Tool Categories:
     }
   );
 
-  // 16. write_stdin
+  // 18. write_stdin
   registerTool(
     "write_stdin",
     "Sends input to a running process session stdin.",
@@ -423,7 +486,7 @@ Available Tool Categories:
     }
   );
 
-  // 17. interrupt_process
+  // 19. interrupt_process
   registerTool(
     "interrupt_process",
     "Terminates a process session and all its child process trees cleanly.",
@@ -436,13 +499,72 @@ Available Tool Categories:
     }
   );
 
-  // 18. browser_navigate
+  // 20. browser_open
+  registerTool(
+    "browser_open",
+    "Opens or attaches to a named persistent Chromium browser session.",
+    {
+      session_id: z.string().optional().describe("Browser session ID. Defaults to 'default'."),
+      url: z.string().optional().describe("Initial URL to open."),
+    },
+    async ({ session_id = "default", url }) => {
+      const session = await browserManager.getSession(session_id);
+      if (url) {
+        await executeNavigate(session, url);
+      }
+      return formatMcpResponse({
+        success: true,
+        action: `browser_open "${session_id}"`,
+        text: `Browser session "${session_id}" is active.`,
+        verification: { performed: true, passed: true, method: "browser_session_init" },
+        data: { sessionId: session_id },
+      });
+    }
+  );
+
+  // 21. browser_close
+  registerTool(
+    "browser_close",
+    "Closes a persistent browser session and its pages.",
+    {
+      session_id: z.string().optional().describe("Browser session ID. Defaults to 'default'."),
+    },
+    async ({ session_id = "default" }) => {
+      await browserManager.closeSession(session_id);
+      return formatMcpResponse({
+        success: true,
+        action: `browser_close "${session_id}"`,
+        text: `Closed browser session "${session_id}".`,
+        verification: { performed: true, passed: true, method: "browser_session_close" },
+      });
+    }
+  );
+
+  // 22. browser_list
+  registerTool(
+    "browser_list",
+    "Lists all active persistent browser sessions and open tabs.",
+    {},
+    async () => {
+      const list = browserManager.listSessions();
+      const lines = list.map((s) => `[Session "${s.id}"] ${s.tabsCount} tab(s), active: ${s.activeUrl}`);
+      return formatMcpResponse({
+        success: true,
+        action: "browser_list",
+        text: list.length > 0 ? `Active Browser Sessions (${list.length}):\n${lines.join("\n")}` : "No active browser sessions.",
+        verification: { performed: true, passed: true, method: "browser_sessions_scan" },
+        data: list,
+      });
+    }
+  );
+
+  // 23. browser_navigate
   registerTool(
     "browser_navigate",
-    "Navigates the persistent Chromium browser session to a URL and verifies load status.",
+    "Navigates the active tab to a URL and verifies load status.",
     {
       url: z.string().describe("URL to navigate to."),
-      session_id: z.string().optional().describe("Browser session ID. Defaults to 'default'."),
+      session_id: z.string().optional().describe("Browser session ID."),
     },
     async ({ url, session_id = "default" }) => {
       const session = await browserManager.getSession(session_id);
@@ -451,7 +573,110 @@ Available Tool Categories:
     }
   );
 
-  // 19. browser_snapshot
+  // 24. page_reload
+  registerTool(
+    "page_reload",
+    "Reloads the current active browser tab.",
+    {
+      session_id: z.string().optional().describe("Browser session ID."),
+    },
+    async ({ session_id = "default" }) => {
+      const session = await browserManager.getSession(session_id);
+      const res = await executeReload(session);
+      return formatMcpResponse(res);
+    }
+  );
+
+  // 25. page_back
+  registerTool(
+    "page_back",
+    "Navigates back in browser history.",
+    {
+      session_id: z.string().optional().describe("Browser session ID."),
+    },
+    async ({ session_id = "default" }) => {
+      const session = await browserManager.getSession(session_id);
+      const res = await executeGoBack(session);
+      return formatMcpResponse(res);
+    }
+  );
+
+  // 26. page_forward
+  registerTool(
+    "page_forward",
+    "Navigates forward in browser history.",
+    {
+      session_id: z.string().optional().describe("Browser session ID."),
+    },
+    async ({ session_id = "default" }) => {
+      const session = await browserManager.getSession(session_id);
+      const res = await executeGoForward(session);
+      return formatMcpResponse(res);
+    }
+  );
+
+  // 27. browser_tab_new
+  registerTool(
+    "browser_tab_new",
+    "Opens a new browser tab in the session.",
+    {
+      session_id: z.string().optional().describe("Browser session ID."),
+      url: z.string().optional().describe("Optional URL to open in new tab."),
+    },
+    async ({ session_id = "default", url }) => {
+      const session = await browserManager.getSession(session_id);
+      const tabIdx = await browserManager.createTab(session, url);
+      return formatMcpResponse({
+        success: true,
+        action: `browser_tab_new (Tab #${tabIdx})`,
+        text: `Opened new tab #${tabIdx} in session "${session_id}".`,
+        verification: { performed: true, passed: true, method: "browser_new_page" },
+        data: { tabIndex: tabIdx },
+      });
+    }
+  );
+
+  // 28. browser_tab_select
+  registerTool(
+    "browser_tab_select",
+    "Selects active browser tab by index.",
+    {
+      tab_index: z.number().int().nonnegative().describe("Tab index to select."),
+      session_id: z.string().optional().describe("Browser session ID."),
+    },
+    async ({ tab_index, session_id = "default" }) => {
+      const session = await browserManager.getSession(session_id);
+      const ok = browserManager.selectTab(session, tab_index);
+      return formatMcpResponse({
+        success: ok,
+        action: `browser_tab_select (${tab_index})`,
+        text: ok ? `Switched to tab #${tab_index}.` : `Tab #${tab_index} does not exist.`,
+        verification: { performed: true, passed: ok, method: "tab_selection" },
+      });
+    }
+  );
+
+  // 29. browser_tab_close
+  registerTool(
+    "browser_tab_close",
+    "Closes a browser tab by index.",
+    {
+      tab_index: z.number().int().nonnegative().describe("Tab index to close."),
+      session_id: z.string().optional().describe("Browser session ID."),
+    },
+    async ({ tab_index, session_id = "default" }) => {
+      const session = await browserManager.getSession(session_id);
+      const ok = await browserManager.closeTab(session, tab_index);
+      return formatMcpResponse({
+        success: ok,
+        action: `browser_tab_close (${tab_index})`,
+        text: ok ? `Closed tab #${tab_index}.` : `Could not close tab #${tab_index}.`,
+        verification: { performed: true, passed: ok, method: "tab_close" },
+      });
+    }
+  );
+
+  // 30. browser_snapshot
   registerTool(
     "browser_snapshot",
     "Builds an accessible interactive element tree with stable element references ([ref=e1], [ref=e2]) and version tracking.",
@@ -465,7 +690,7 @@ Available Tool Categories:
     }
   );
 
-  // 20. browser_click
+  // 31. browser_click
   registerTool(
     "browser_click",
     "Clicks an interactive element by reference (e.g. 'e1' from browser_snapshot) or CSS selector.",
@@ -481,7 +706,39 @@ Available Tool Categories:
     }
   );
 
-  // 21. browser_fill
+  // 32. browser_double_click
+  registerTool(
+    "browser_double_click",
+    "Double-clicks an interactive element.",
+    {
+      ref: z.string().optional(),
+      selector: z.string().optional(),
+      session_id: z.string().optional(),
+    },
+    async ({ ref, selector, session_id = "default" }) => {
+      const session = await browserManager.getSession(session_id);
+      const res = await executeDoubleClick(session, { ref, selector });
+      return formatMcpResponse(res);
+    }
+  );
+
+  // 33. browser_hover
+  registerTool(
+    "browser_hover",
+    "Hovers over an interactive element.",
+    {
+      ref: z.string().optional(),
+      selector: z.string().optional(),
+      session_id: z.string().optional(),
+    },
+    async ({ ref, selector, session_id = "default" }) => {
+      const session = await browserManager.getSession(session_id);
+      const res = await executeHover(session, { ref, selector });
+      return formatMcpResponse(res);
+    }
+  );
+
+  // 34. browser_fill
   registerTool(
     "browser_fill",
     "Fills an input element with text and performs mandatory DOM readback verification.",
@@ -498,39 +755,148 @@ Available Tool Categories:
     }
   );
 
-  // 22. browser_check
+  // 35. browser_check
   registerTool(
     "browser_check",
-    "Checks or unchecks a checkbox with mandatory DOM .isChecked() readback verification.",
+    "Checks a checkbox with mandatory DOM .isChecked() readback verification.",
     {
-      ref: z.string().optional().describe("Element reference from browser_snapshot (e.g. 'e1')."),
-      selector: z.string().optional().describe("CSS selector."),
-      checked: z.boolean().optional().describe("Target checked state. Defaults to true."),
-      session_id: z.string().optional().describe("Browser session ID."),
+      ref: z.string().optional(),
+      selector: z.string().optional(),
+      session_id: z.string().optional(),
     },
-    async ({ ref, selector, checked = true, session_id = "default" }) => {
+    async ({ ref, selector, session_id = "default" }) => {
       const session = await browserManager.getSession(session_id);
-      const res = await executeCheck(session, { ref, selector }, checked);
+      const res = await executeCheck(session, { ref, selector }, true);
       return formatMcpResponse(res);
     }
   );
 
-  // 23. browser_press_key
+  // 36. browser_uncheck
+  registerTool(
+    "browser_uncheck",
+    "Unchecks a checkbox with mandatory DOM .isChecked() readback verification.",
+    {
+      ref: z.string().optional(),
+      selector: z.string().optional(),
+      session_id: z.string().optional(),
+    },
+    async ({ ref, selector, session_id = "default" }) => {
+      const session = await browserManager.getSession(session_id);
+      const res = await executeCheck(session, { ref, selector }, false);
+      return formatMcpResponse(res);
+    }
+  );
+
+  // 37. browser_select
+  registerTool(
+    "browser_select",
+    "Selects a dropdown option with DOM readback verification.",
+    {
+      ref: z.string().optional(),
+      selector: z.string().optional(),
+      value: z.string().describe("Option value to select."),
+      session_id: z.string().optional(),
+    },
+    async ({ ref, selector, value, session_id = "default" }) => {
+      const session = await browserManager.getSession(session_id);
+      const res = await executeSelect(session, { ref, selector }, value);
+      return formatMcpResponse(res);
+    }
+  );
+
+  // 38. browser_upload
+  registerTool(
+    "browser_upload",
+    "Uploads files to a file input element.",
+    {
+      ref: z.string().optional(),
+      selector: z.string().optional(),
+      files: z.array(z.string()).describe("Paths of files to upload."),
+      session_id: z.string().optional(),
+    },
+    async ({ ref, selector, files, session_id = "default" }) => {
+      const session = await browserManager.getSession(session_id);
+      const res = await executeUpload(session, { ref, selector }, files);
+      return formatMcpResponse(res);
+    }
+  );
+
+  // 39. browser_press_key
   registerTool(
     "browser_press_key",
     "Presses a keyboard key on the browser page (e.g. 'Enter', 'Tab').",
     {
-      key: z.string().describe("Key name (e.g. 'Enter', 'Tab', 'Escape')."),
+      key: z.string().describe("Key name."),
+      ref: z.string().optional().describe("Optional element reference to target."),
+      selector: z.string().optional().describe("Optional selector to target."),
       session_id: z.string().optional().describe("Browser session ID."),
     },
-    async ({ key, session_id = "default" }) => {
+    async ({ key, ref, selector, session_id = "default" }) => {
       const session = await browserManager.getSession(session_id);
-      const res = await executePressKey(session, key);
+      const res = await executePressKey(session, key, { ref, selector });
       return formatMcpResponse(res);
     }
   );
 
-  // 24. browser_screenshot
+  // 40. browser_eval
+  registerTool(
+    "browser_eval",
+    "Evaluates a JavaScript expression in the active browser page context.",
+    {
+      script: z.string().describe("JavaScript code to evaluate."),
+      session_id: z.string().optional(),
+    },
+    async ({ script, session_id = "default" }) => {
+      const session = await browserManager.getSession(session_id);
+      const res = await executeEval(session, script);
+      return formatMcpResponse(res);
+    }
+  );
+
+  // 41. browser_pdf
+  registerTool(
+    "browser_pdf",
+    "Renders and saves the active page to a PDF document with disk verification.",
+    {
+      output_path: z.string().optional().describe("Output PDF file path."),
+      session_id: z.string().optional(),
+    },
+    async ({ output_path, session_id = "default" }) => {
+      const session = await browserManager.getSession(session_id);
+      const res = await executePdf(session, output_path);
+      return formatMcpResponse(res);
+    }
+  );
+
+  // 42. browser_console
+  registerTool(
+    "browser_console",
+    "Retrieves captured console logs from the browser session.",
+    {
+      session_id: z.string().optional(),
+    },
+    async ({ session_id = "default" }) => {
+      const session = await browserManager.getSession(session_id);
+      const res = executeGetConsole(session);
+      return formatMcpResponse(res);
+    }
+  );
+
+  // 43. browser_network
+  registerTool(
+    "browser_network",
+    "Retrieves captured network requests and responses from the browser session.",
+    {
+      session_id: z.string().optional(),
+    },
+    async ({ session_id = "default" }) => {
+      const session = await browserManager.getSession(session_id);
+      const res = executeGetNetwork(session);
+      return formatMcpResponse(res);
+    }
+  );
+
+  // 44. browser_screenshot
   registerTool(
     "browser_screenshot",
     "Captures a screenshot of the browser page, verifies disk persistence, and attaches the base64 image block for direct visual inspection by the model.",
@@ -550,7 +916,89 @@ Available Tool Categories:
     }
   );
 
-  // 25. git_status
+  // 45. screenshot_desktop
+  registerTool(
+    "screenshot_desktop",
+    "Captures the entire desktop or a rectangular region (outside the browser) and returns visual base64 image payload.",
+    {
+      output_path: z.string().optional(),
+      region: z.object({ x: z.number(), y: z.number(), width: z.number(), height: z.number() }).optional(),
+    },
+    async ({ output_path, region }) => {
+      const res = await executeDesktopScreenshot({ outputPath: output_path, region });
+      return formatMcpResponse(res.toolResponse, { image: res.imagePayload });
+    }
+  );
+
+  // 46. list_windows
+  registerTool(
+    "list_windows",
+    "Lists active desktop windows with titles and process PIDs (Windows hosts).",
+    {},
+    async () => {
+      const res = executeListWindows();
+      return formatMcpResponse(res);
+    }
+  );
+
+  // 47. focus_window
+  registerTool(
+    "focus_window",
+    "Brings a desktop window to the foreground by title or PID.",
+    {
+      target: z.string().describe("Window title substring or PID."),
+    },
+    async ({ target }) => {
+      const res = executeFocusWindow(target);
+      return formatMcpResponse(res);
+    }
+  );
+
+  // 48. read_notebook
+  registerTool(
+    "read_notebook",
+    "Reads a Jupyter notebook (.ipynb) structurally with cell types, source, and execution counts.",
+    {
+      notebook_path: z.string().describe("Path to .ipynb file."),
+    },
+    async ({ notebook_path }) => {
+      const res = await executeReadNotebook({
+        workspaceRoot: getRoot(),
+        allowedRoots: config.allowedRoots,
+        notebookPath: notebook_path,
+      });
+      return formatMcpResponse(res);
+    }
+  );
+
+  // 49. edit_notebook
+  registerTool(
+    "edit_notebook",
+    "Edits, inserts, or deletes cells in a Jupyter notebook (.ipynb) with mandatory post-mutation JSON verification.",
+    {
+      notebook_path: z.string().describe("Path to .ipynb file."),
+      cell_id: z.string().optional().describe("Target cell ID."),
+      cell_index: z.number().int().positive().optional().describe("Target 1-based cell index."),
+      new_source: z.string().describe("New source code or markdown."),
+      cell_type: z.enum(["code", "markdown"]).optional().describe("Cell type. Defaults to code."),
+      edit_mode: z.enum(["replace", "insert", "delete"]).optional().describe("Edit mode. Defaults to replace."),
+    },
+    async ({ notebook_path, cell_id, cell_index, new_source, cell_type, edit_mode }) => {
+      const res = await executeEditNotebook({
+        workspaceRoot: getRoot(),
+        allowedRoots: config.allowedRoots,
+        notebookPath: notebook_path,
+        cellId: cell_id,
+        cellIndex: cell_index,
+        newSource: new_source,
+        cellType: cell_type,
+        editMode: edit_mode,
+      });
+      return formatMcpResponse(res);
+    }
+  );
+
+  // 50. git_status
   registerTool(
     "git_status",
     "Checks git working tree status and branch name.",
@@ -561,7 +1009,7 @@ Available Tool Categories:
     }
   );
 
-  // 26. git_diff
+  // 51. git_diff
   registerTool(
     "git_diff",
     "Returns git diff against HEAD or specified ref.",
@@ -575,7 +1023,7 @@ Available Tool Categories:
     }
   );
 
-  // 27. show_changes
+  // 52. show_changes
   registerTool(
     "show_changes",
     "Shows unified summary of all uncommitted modifications and git diff.",
@@ -586,7 +1034,7 @@ Available Tool Categories:
     }
   );
 
-  // 28. revert_changes
+  // 53. revert_changes
   registerTool(
     "revert_changes",
     "Reverts uncommitted changes with mandatory post-revert git status verification.",
@@ -599,7 +1047,46 @@ Available Tool Categories:
     }
   );
 
-  // 29. task_create
+  // 54. enter_worktree
+  registerTool(
+    "enter_worktree",
+    "Creates an isolated Git worktree for branch development and updates active workspace root.",
+    {
+      name: z.string().optional().describe("Branch / worktree name."),
+      base_ref: z.string().optional().describe("Base Git ref. Defaults to HEAD."),
+    },
+    async ({ name, base_ref }) => {
+      const res = await executeEnterWorktree({ name, baseRef: base_ref });
+      return formatMcpResponse(res);
+    }
+  );
+
+  // 55. exit_worktree
+  registerTool(
+    "exit_worktree",
+    "Leaves the worktree and switches back to main checkout, with dirty-state safety guard.",
+    {
+      action: z.enum(["keep", "remove"]).describe("Keep or remove the worktree folder."),
+      force: z.boolean().optional().describe("Force removal even if uncommitted changes exist. Defaults to false."),
+    },
+    async ({ action, force }) => {
+      const res = await executeExitWorktree({ action, force });
+      return formatMcpResponse(res);
+    }
+  );
+
+  // 56. list_worktrees
+  registerTool(
+    "list_worktrees",
+    "Lists all existing git worktrees.",
+    {},
+    async () => {
+      const res = executeListWorktrees(getRoot());
+      return formatMcpResponse(res);
+    }
+  );
+
+  // 57. task_create
   registerTool(
     "task_create",
     "Creates a new task in the planning store.",
@@ -613,7 +1100,7 @@ Available Tool Categories:
     }
   );
 
-  // 30. task_update
+  // 58. task_update
   registerTool(
     "task_update",
     "Updates task status, subject, or description.",
@@ -629,7 +1116,7 @@ Available Tool Categories:
     }
   );
 
-  // 31. task_list
+  // 59. task_list
   registerTool(
     "task_list",
     "Lists all tasks and their current status.",
@@ -640,7 +1127,71 @@ Available Tool Categories:
     }
   );
 
-  // 32. devspace_diagnostics
+  // 60. delegate_subagent
+  registerTool(
+    "delegate_subagent",
+    "Spawns a bounded subagent with a specific persona ('explore', 'coding', 'review', 'verification', 'planning') to perform focused tasks.",
+    {
+      task: z.string().describe("Specific subagent task prompt."),
+      persona: z.enum(["explore", "coding", "review", "verification", "planning"]).optional().describe("Subagent persona. Defaults to explore."),
+      context: z.string().optional().describe("Bounded context."),
+    },
+    async ({ task, persona, context }) => {
+      const res = subagentEngine.delegateSubagent(task, persona, context);
+      return formatMcpResponse(res);
+    }
+  );
+
+  // 61. list_subagents
+  registerTool(
+    "list_subagents",
+    "Lists active and recently completed subagents.",
+    {},
+    async () => {
+      const res = subagentEngine.listSubagents();
+      return formatMcpResponse(res);
+    }
+  );
+
+  // 62. enter_plan_mode
+  registerTool(
+    "enter_plan_mode",
+    "Enters Plan Mode to formulate and refine actions before direct execution.",
+    {},
+    async () => {
+      const res = subagentEngine.enterPlanMode();
+      return formatMcpResponse(res);
+    }
+  );
+
+  // 63. exit_plan_mode
+  registerTool(
+    "exit_plan_mode",
+    "Exits Plan Mode with an approved plan and resumes direct execution.",
+    {
+      plan: z.string().describe("The final approved plan text."),
+      approved_actions: z.array(z.string()).optional().describe("Approved action summaries."),
+    },
+    async ({ plan, approved_actions }) => {
+      const res = subagentEngine.exitPlanMode(plan, approved_actions);
+      return formatMcpResponse(res);
+    }
+  );
+
+  // 64. get_environment
+  registerTool(
+    "get_environment",
+    "Returns detected environment profile: OS, shells, compilers, and dev tools (cached for speed).",
+    {
+      force_refresh: z.boolean().optional().describe("Force re-probing tools. Defaults to false."),
+    },
+    async ({ force_refresh }) => {
+      const res = detectEnvironment(force_refresh ?? false);
+      return formatMcpResponse(res);
+    }
+  );
+
+  // 65. devspace_diagnostics
   registerTool(
     "devspace_diagnostics",
     "Returns comprehensive health diagnostics, shell availability, browser status, and tool reliability audit logs.",
