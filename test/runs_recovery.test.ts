@@ -241,6 +241,7 @@ describe("VerityMCP Observability & Recovery Acceptance Suite", () => {
     const completeRes = await testRunManager.completeRun(active.run_id, {
       status: "completed",
       notes: "All test phases successfully passed and verified",
+      resolve_pending: true,
     });
 
     assert.equal(completeRes.status, "completed");
@@ -308,7 +309,7 @@ describe("VerityMCP Observability & Recovery Acceptance Suite", () => {
     // 4. complete_run tool call
     const compCall: any = await mcpClient.callTool({
       name: "complete_run",
-      arguments: { run_id: mcpRunId, status: "completed" },
+      arguments: { run_id: mcpRunId, status: "completed", resolve_pending: true },
     });
     assert.ok(compCall.content[0].text.includes("marked as completed"));
   });
