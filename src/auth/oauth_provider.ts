@@ -58,12 +58,11 @@ export class OAuthProvider {
   }
 
   public getProtectedResourceMetadata(baseUrl: string, reqUrl?: string) {
-    const isMcpSubpath = reqUrl && reqUrl.includes("/mcp");
-    const resourceUrl = isMcpSubpath ? `${baseUrl}/mcp` : baseUrl;
+    const resourceUrl = `${baseUrl}/mcp`;
     return {
       resource: resourceUrl,
       authorization_servers: [baseUrl],
-      scopes_supported: ["verity", "offline_access"],
+      scopes_supported: ["devspace", "verity", "offline_access"],
       resource_name: "VerityMCP Server",
       resource_documentation: "https://github.com/tanishqbaweja/VerityMCP",
     };
@@ -80,7 +79,7 @@ export class OAuthProvider {
       grant_types_supported: ["authorization_code", "refresh_token"],
       code_challenge_methods_supported: ["S256", "plain"],
       token_endpoint_auth_methods_supported: ["none", "client_secret_post", "client_secret_basic"],
-      scopes_supported: ["verity", "offline_access"],
+      scopes_supported: ["devspace", "verity", "offline_access"],
     };
   }
 
@@ -248,7 +247,7 @@ export class OAuthProvider {
           token_type: "Bearer",
           refresh_token: refreshToken,
           expires_in: expiresIn,
-          scope: "verity offline_access",
+          scope: req.body.scope || "devspace",
         });
         return;
       }
@@ -268,7 +267,7 @@ export class OAuthProvider {
           token_type: "Bearer",
           refresh_token: refreshToken,
           expires_in: expiresIn,
-          scope: "verity offline_access",
+          scope: req.body.scope || "devspace",
         });
         return;
       }
