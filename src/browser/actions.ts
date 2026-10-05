@@ -362,15 +362,17 @@ export async function executeGoForward(
 export async function executeClick(
   session: BrowserSession,
   target: { ref?: string; selector?: string }
-): Promise<StandardToolResponse<{ target: string; currentUrl: string }>> {
+): Promise<StandardToolResponse<{ target: string; currentUrl: string; timings?: Record<string, number> }>> {
   const startTime = Date.now();
   const page = browserManager.getActivePage(session);
   emitBrowserActionStart(session, "browser_click", `Clicking ${target.ref ? `[ref=${target.ref}]` : target.selector || "element"}`, target);
 
   let selector: string;
+  const tResStart = Date.now();
   try {
     selector = resolveTarget(session, target);
   } catch (err: any) {
+    const target_resolution_ms = Date.now() - tResStart;
     const isStale = err.code === "STALE_ELEMENT_REFERENCE";
     emitBrowserActionFailure(session, "browser_click", "Target resolution failed", err.message, target);
     return {
@@ -390,8 +392,10 @@ export async function executeClick(
       durationMs: Date.now() - startTime,
     };
   }
+  const target_resolution_ms = Date.now() - tResStart;
 
   try {
+    const tPreStart = Date.now();
     const beforeUrl = page.url();
     const beforeTitle = await page.title().catch(() => "");
     let beforeChecked: boolean | null = null;
@@ -406,7 +410,9 @@ export async function executeClick(
       }
       beforeExpanded = await loc.getAttribute("aria-expanded").catch(() => null);
     } catch {}
+    const pre_state_capture_ms = Date.now() - tPreStart;
 
+    const tClickStart = Date.now();
     const locator = page.locator(selector).first();
     await locator.waitFor({ state: "attached", timeout: 10000 });
     let firstClickErr: any = null;
@@ -422,8 +428,22 @@ export async function executeClick(
         await locator.click({ force: true, timeout: 2000 }).catch(() => {});
       }
     }
-    await page.waitForTimeout(150);
+    const playwright_click_ms = Date.now() - tClickStart;
 
+    // Navigation wait phase
+    const tNavStart = Date.now();
+    if (page.url() === beforeUrl) {
+      // If URL hasn't changed immediately, wait briefly for navigation or URL change if an anchor/button triggered navigation
+      await Promise.race([
+        page.waitForURL((u) => u.toString() !== beforeUrl, { timeout: 1500 }).catch(() => null),
+        new Promise((resolve) => setTimeout(resolve, 150)),
+      ]);
+    } else {
+      await page.waitForTimeout(100);
+    }
+    const navigation_wait_ms = Date.now() - tNavStart;
+
+    const tPostStart = Date.now();
     const afterUrl = page.url();
     const afterTitle = await page.title().catch(() => "");
     let afterChecked: boolean | null = null;
@@ -432,14 +452,18 @@ export async function executeClick(
 
     try {
       elementStillPresent = await page.locator(selector).first().count().then((c) => c > 0).catch(() => false);
-      if (beforeChecked !== null) {
+      if (elementStillPresent && beforeChecked !== null) {
         afterChecked = await page.locator(selector).first().isChecked().catch(() => null);
       }
-      afterExpanded = await page.locator(selector).first().getAttribute("aria-expanded").catch(() => null);
+      if (elementStillPresent && beforeExpanded !== null) {
+        afterExpanded = await page.locator(selector).first().getAttribute("aria-expanded").catch(() => null);
+      }
     } catch {
       elementStillPresent = false;
     }
+    const post_state_capture_ms = Date.now() - tPostStart;
 
+    const tVerifStart = Date.now();
     const observedChanges: Array<{ type: string; before?: unknown; after?: unknown; description?: string }> = [];
 
     if (afterUrl !== beforeUrl) {
@@ -486,6 +510,19 @@ export async function executeClick(
       ? `Clicked element successfully. Observed changes: ${observedChanges.map((c) => c.description).join("; ")}`
       : `Clicked element successfully. Execution: EXECUTED (no immediate DOM state delta observed).`;
 
+    const verification_ms = Date.now() - tVerifStart;
+    const total_ms = Date.now() - startTime;
+
+    const timings = {
+      target_resolution_ms,
+      pre_state_capture_ms,
+      playwright_click_ms,
+      navigation_wait_ms,
+      post_state_capture_ms,
+      verification_ms,
+      total_ms,
+    };
+
     emitBrowserActionComplete(
       session,
       "browser_click",
@@ -496,6 +533,7 @@ export async function executeClick(
         afterChecked,
         afterUrl,
         method: hasStateDelta ? "dom_delta_observation" : "playwright_click",
+        timings,
       },
       target
     );
@@ -524,14 +562,14 @@ export async function executeClick(
         performed: true,
         passed: true,
         method: hasStateDelta ? "dom_delta_observation" : "playwright_click",
-        details: { selector, beforeUrl, afterUrl, observedChanges },
+        details: { selector, beforeUrl, afterUrl, observedChanges, timings },
         execution: { status: "passed", method: "playwright_click" },
         state: hasStateDelta
           ? { status: "passed", method: "dom_delta_observation", observed_changes: observedChanges }
           : { status: "not_observable", method: "dom_delta_observation" },
       },
-      data: { target: selector, currentUrl: afterUrl },
-      durationMs: Date.now() - startTime,
+      data: { target: selector, currentUrl: afterUrl, timings },
+      durationMs: total_ms,
     };
   } catch (err: any) {
     const isStale = err.code === "STALE_ELEMENT_REFERENCE" || err.message?.includes("STALE_ELEMENT_REFERENCE");

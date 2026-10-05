@@ -2,6 +2,8 @@ import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
 import type { VerityConfig } from "../types/index.js";
 import { formatMcpResponse, type McpToolResponse } from "./response.js";
+import { getMonitorHtml } from "../ui/monitor_html.js";
+import { runManager } from "../runs/run_manager.js";
 import { workspaceManager } from "../workspace/workspace_manager.js";
 import { discoverSkills, readSkillContent } from "../workspace/skills.js";
 import { executeReadFile } from "../filesystem/read_file.js";
@@ -86,7 +88,35 @@ export function createVerityMcpServer(config: VerityConfig): McpServer {
 
 VerityMCP Core Philosophy:
 AN AGENT MUST BE ABLE TO TRUST ITS TOOLS.
-All filesystem mutations, patch applications, git reverts, process executions, browser interactions, and screenshots are verified against real system state before reporting success.`,
+All filesystem mutations, patch applications, git reverts, process executions, browser interactions, and screenshots are verified against real system state before reporting success.
+
+DURABLE EXECUTION & RECOVERY INSTRUCTIONS:
+1. At the beginning of substantial multi-step tasks, call "start_run" with a clear goal to create a durable journal and mount the Live Activity Monitor UI.
+2. During milestone completions, call "checkpoint_run" to persist completed and outstanding steps.
+3. If the user prompts "Continue", "Resume", or "Keep going", ALWAYS CALL "resume_run" FIRST. Do not guess state from ChatGPT's collapsed transcript.
+4. The durable source of truth is strictly <server_root>/.verity, NEVER AppData, NEVER OS temp, and NEVER the user workspace.`,
+    }
+  );
+
+  // Register standard MCP App UI Resource for Live Activity Monitor
+  server.registerResource(
+    "Activity Monitor",
+    "ui://verity/activity-monitor",
+    {
+      title: "Activity Monitor",
+      description: "Live operational activity and recovery monitor for VerityMCP runs",
+      mimeType: "text/html;profile=mcp-app",
+    },
+    async (uri) => {
+      return {
+        contents: [
+          {
+            uri: uri.href,
+            mimeType: "text/html;profile=mcp-app",
+            text: getMonitorHtml(),
+          },
+        ],
+      };
     }
   );
 
@@ -133,6 +163,13 @@ All filesystem mutations, patch applications, git reverts, process executions, b
     "activity_clear",
     "activity_monitor",
     "verity_diagnostics",
+    "start_run",
+    "checkpoint_run",
+    "resume_run",
+    "complete_run",
+    "list_runs",
+    "get_run",
+    "run_activity_read",
   ]);
 
   function formatToolDisplayTitle(toolName: string, args: any): string {
@@ -211,6 +248,20 @@ All filesystem mutations, patch applications, git reverts, process executions, b
         return `Reverting changes for ${args?.paths?.join(", ") || "all modified files"}`;
       case "open_workspace":
         return `Opening workspace ${args?.path || "."}`;
+      case "start_run":
+        return `Starting run: ${args?.goal?.slice(0, 40) || ""}`;
+      case "checkpoint_run":
+        return `Recording run checkpoint`;
+      case "resume_run":
+        return `Resuming run: ${args?.run_id || "latest"}`;
+      case "complete_run":
+        return `Completing run: ${args?.run_id || "active"}`;
+      case "list_runs":
+        return `Listing persisted runs`;
+      case "get_run":
+        return `Retrieving run: ${args?.run_id || ""}`;
+      case "run_activity_read":
+        return `Reading activity journal for run: ${args?.run_id || "active"}`;
       default:
         return toolName.replace(/_/g, " ");
     }
@@ -282,6 +333,20 @@ All filesystem mutations, patch applications, git reverts, process executions, b
         return `Revert modified files and verify clean Git tree`;
       case "open_workspace":
         return `Bootstrap workspace environment, map architecture, and discover skills`;
+      case "start_run":
+        return `Initialize durable execution journal and live activity monitor`;
+      case "checkpoint_run":
+        return `Persist current milestone, completed work, and outstanding tasks`;
+      case "resume_run":
+        return `Recover durable execution context from .verity store and reconcile state`;
+      case "complete_run":
+        return `Finalize run and verify that all temporary resources and debt are clean`;
+      case "list_runs":
+        return `Inspect historical and interrupted runs in persistent storage`;
+      case "get_run":
+        return `Read complete execution state, checkpoints, and event history`;
+      case "run_activity_read":
+        return `Read paginated activity events from run's disk journal`;
       default:
         return `Execute ${toolName} operation`;
     }
@@ -289,6 +354,8 @@ All filesystem mutations, patch applications, git reverts, process executions, b
 
   function extractToolTarget(args: any): Record<string, unknown> | string | undefined {
     if (!args || typeof args !== "object") return undefined;
+    if (args.run_id) return args.run_id;
+    if (args.goal) return args.goal;
     if (args.file_path) return args.file_path;
     if (args.path) return args.path;
     if (args.url) return args.url;
@@ -486,6 +553,15 @@ All filesystem mutations, patch applications, git reverts, process executions, b
         content: args.content,
         overwrite: args.overwrite ?? true,
       });
+      if (res.success && res.resolved_path) {
+        await runManager.trackModifiedFile({
+          path: res.resolved_path,
+          operation: "write_file",
+          pre_hash: (res.data as any)?.pre_sha256,
+          post_hash: (res.data as any)?.sha256,
+          timestamp: new Date().toISOString(),
+        }).catch(() => {});
+      }
       return formatMcpResponse(res);
     }
   );
@@ -514,6 +590,15 @@ All filesystem mutations, patch applications, git reverts, process executions, b
         replaceAll: args.replace_all ?? false,
         expectedSha256: args.expected_sha256,
       });
+      if (res.success && res.resolved_path) {
+        await runManager.trackModifiedFile({
+          path: res.resolved_path,
+          operation: "edit_file",
+          pre_hash: (res.data as any)?.pre_sha256 || args.expected_sha256,
+          post_hash: (res.data as any)?.post_sha256 || (res.data as any)?.sha256,
+          timestamp: new Date().toISOString(),
+        }).catch(() => {});
+      }
       return formatMcpResponse(res);
     }
   );
@@ -533,6 +618,17 @@ All filesystem mutations, patch applications, git reverts, process executions, b
         patch,
         expectedSha256Map: expected_sha256_map,
       });
+      if (res.success && (res.data as any)?.applied_files) {
+        for (const file of (res.data as any).applied_files) {
+          await runManager.trackModifiedFile({
+            path: file.path || file.resolved_path,
+            operation: "apply_patch",
+            pre_hash: file.pre_sha256,
+            post_hash: file.post_sha256,
+            timestamp: new Date().toISOString(),
+          }).catch(() => {});
+        }
+      }
       return formatMcpResponse(res);
     }
   );
@@ -552,6 +648,9 @@ All filesystem mutations, patch applications, git reverts, process executions, b
         filePath: file_path,
         recursive: recursive ?? false,
       });
+      if (res.success && res.resolved_path) {
+        await runManager.resolveCleanupDebt(res.resolved_path).catch(() => {});
+      }
       return formatMcpResponse(res);
     }
   );
@@ -1613,8 +1712,9 @@ All filesystem mutations, patch applications, git reverts, process executions, b
   // 61. activity_read
   registerTool(
     "activity_read",
-    "Reads activity stream events with cursor pagination metadata (cursor, next_cursor, has_more, total_retained).",
+    "Reads activity stream events with cursor pagination metadata (cursor, next_cursor, has_more, total_retained). If run_id is supplied, reads directly from run's disk journal.",
     {
+      run_id: z.string().optional().describe("Optional run ID to read from durable run events.jsonl instead of memory buffer."),
       cursor: z.number().int().nonnegative().optional().describe("Cursor sequence number to read after. Defaults to 0."),
       limit: z.number().int().positive().optional().describe("Maximum events to read. Defaults to 50."),
       type: z
@@ -1637,7 +1737,18 @@ All filesystem mutations, patch applications, git reverts, process executions, b
       browser_session_id: z.string().optional().describe("Filter by browser session ID."),
       process_session_id: z.string().optional().describe("Filter by process session ID."),
     },
-    async ({ cursor, limit, type, workspace_id, browser_session_id, process_session_id }) => {
+    async ({ run_id, cursor, limit, type, workspace_id, browser_session_id, process_session_id }) => {
+      if (run_id) {
+        const res = await runManager.readRunEvents(run_id, cursor ?? 0, limit ?? 50);
+        return formatMcpResponse({
+          success: true,
+          action: `activity_read (run_id: ${run_id})`,
+          text: `Retrieved ${res.events.length} activity events for run "${run_id}" from disk journal.`,
+          data: res,
+          verification: { performed: true, passed: true, method: "run_journal_events_read" },
+        });
+      }
+
       const result = activityStream.read({
         cursor: cursor ?? 0,
         limit: limit ?? 50,
@@ -1698,22 +1809,32 @@ All filesystem mutations, patch applications, git reverts, process executions, b
         ...recent.events.map((e) => `  [#${e.seq}] [${e.type}] ${e.display_title || e.title}${e.purpose ? ` (Why: ${e.purpose})` : ""}${e.status ? ` - ${e.status}` : ""}`),
       ];
 
-      return formatMcpResponse({
-        success: true,
-        action: "activity_monitor",
-        display_title: "Activity Monitor Status",
-        display_status: currentAction ? "running" : "completed",
-        text: summaryLines.join("\n"),
-        data: {
-          monitor_url: monitorUrl,
-          sse_stream_url: `http://localhost:${port}/activity/stream`,
-          poll_events_url: `http://localhost:${port}/activity/events`,
-          current_action: currentAction,
-          total_retained: totalRetained,
-          recent_events: recent.events,
+      return formatMcpResponse(
+        {
+          success: true,
+          action: "activity_monitor",
+          display_title: "Activity Monitor Status",
+          display_status: currentAction ? "running" : "completed",
+          text: summaryLines.join("\n"),
+          data: {
+            monitor_url: monitorUrl,
+            sse_stream_url: `http://localhost:${port}/activity/stream`,
+            poll_events_url: `http://localhost:${port}/activity/events`,
+            ui_resource: "ui://verity/activity-monitor",
+            current_action: currentAction,
+            total_retained: totalRetained,
+            recent_events: recent.events,
+          },
+          verification: { performed: true, passed: true, method: "activity_stream_monitor" },
         },
-        verification: { performed: true, passed: true, method: "activity_stream_monitor" },
-      });
+        {
+          resource: {
+            uri: "ui://verity/activity-monitor",
+            mimeType: "text/html;profile=mcp-app",
+            text: getMonitorHtml(),
+          },
+        }
+      );
     }
   );
 
@@ -1810,6 +1931,274 @@ All filesystem mutations, patch applications, git reverts, process executions, b
     async () => {
       const res = await observabilityManager.runAcceptanceTest(getRoot());
       return formatMcpResponse(res);
+    }
+  );
+
+  // 70. start_run
+  registerTool(
+    "start_run",
+    "Starts a durable autonomous run with goal, optional workspace, purpose, and phases. Returns run_id, persistent storage path, and embedded Live Activity Monitor UI.",
+    {
+      goal: z.string().describe("Autonomous goal or high-level mission to execute."),
+      workspace: z.string().optional().describe("Workspace root directory path. Defaults to current active workspace."),
+      purpose: z.string().optional().describe("Initial operational reason/intent."),
+      phases: z
+        .array(
+          z.object({
+            id: z.string(),
+            title: z.string(),
+            status: z.enum(["pending", "in_progress", "completed", "failed", "skipped"]).optional(),
+          })
+        )
+        .optional()
+        .describe("Execution phases for tracking progress."),
+    },
+    async ({ goal, workspace, purpose, phases }) => {
+      const targetWs = workspace || workspaceManager.getActiveWorkspaceRoot() || process.cwd();
+      const res = await runManager.startRun({
+        goal,
+        workspace: targetWs,
+        purpose,
+        phases: phases as any,
+      });
+
+      return formatMcpResponse(
+        {
+          success: true,
+          action: `start_run "${goal.slice(0, 50)}"`,
+          display_title: `Run started: ${res.run.run_id}`,
+          text: [
+            `Started VerityMCP Run: ${res.run.run_id}`,
+            `Goal: ${res.run.original_goal}`,
+            `Workspace: ${res.run.workspace}`,
+            `Persistent Storage: ${res.storage_path}`,
+            `Status: ${res.run.status}`,
+            `Live Monitor: ${res.monitor_url}`,
+            `MCP App UI Resource: ${res.ui_resource_uri}`,
+          ].join("\n"),
+          summary: `Started durable run ${res.run.run_id}`,
+          data: {
+            run_id: res.run.run_id,
+            goal: res.run.original_goal,
+            status: res.run.status,
+            workspace: res.run.workspace,
+            storage_path: res.storage_path,
+            monitor_url: res.monitor_url,
+            ui_resource: res.ui_resource_uri,
+            phases: res.run.phases,
+          },
+          verification: { performed: true, passed: true, method: "run_journal_persistence" },
+        },
+        {
+          resource: {
+            uri: res.ui_resource_uri,
+            mimeType: "text/html;profile=mcp-app",
+            text: getMonitorHtml(),
+          },
+        }
+      );
+    }
+  );
+
+  // 71. checkpoint_run
+  registerTool(
+    "checkpoint_run",
+    "Updates durable checkpoint with completed steps, currently active step, pending steps, phases, and notes.",
+    {
+      run_id: z.string().optional().describe("Run ID to checkpoint. Defaults to active run."),
+      completed: z.array(z.string()).optional().describe("Steps completed so far."),
+      current: z.string().optional().describe("Currently active task or step."),
+      pending: z.array(z.string()).optional().describe("Outstanding or remaining steps."),
+      phases: z
+        .array(
+          z.object({
+            id: z.string(),
+            title: z.string(),
+            status: z.enum(["pending", "in_progress", "completed", "failed", "skipped"]).optional(),
+          })
+        )
+        .optional()
+        .describe("Updated phase statuses."),
+      notes: z.string().optional().describe("Operational context or notes."),
+    },
+    async ({ run_id, completed, current, pending, phases, notes }) => {
+      const chk = await runManager.checkpointRun(run_id, {
+        completed,
+        current,
+        pending,
+        phases: phases as any,
+        notes,
+      });
+      return formatMcpResponse({
+        success: true,
+        action: "checkpoint_run",
+        display_title: `Checkpoint recorded`,
+        text: [
+          `Checkpoint recorded successfully.`,
+          `Completed steps (${chk.completed.length}): ${chk.completed.join(", ")}`,
+          `Current: ${chk.current || "None"}`,
+          `Pending steps (${chk.pending.length}): ${chk.pending.join(", ")}`,
+          notes ? `Notes: ${notes}` : "",
+        ]
+          .filter(Boolean)
+          .join("\n"),
+        summary: `Checkpoint saved: ${chk.completed.length} completed, ${chk.pending.length} pending`,
+        data: chk,
+        verification: { performed: true, passed: true, method: "run_checkpoint_persistence" },
+      });
+    }
+  );
+
+  // 72. resume_run
+  registerTool(
+    "resume_run",
+    "Recovers execution context from durable run storage (<server_root>/.verity). Reconciles file hashes, git status, live browser/process sessions. Always call this when user says 'continue' or 'resume'.",
+    {
+      run_id: z.string().optional().describe("Run ID to resume. If omitted, recovers the most recent incomplete or active run."),
+    },
+    async ({ run_id }) => {
+      const recovery = await runManager.resumeRun(run_id);
+      const summaryLines = [
+        `=== Recovered VerityMCP Run: ${recovery.recovered_run_id} ===`,
+        `Original Goal: ${recovery.original_goal}`,
+        `Workspace: ${recovery.workspace}`,
+        `Status: ${recovery.status}`,
+        ``,
+        `Completed Steps (${recovery.completed_steps.length}):`,
+        ...recovery.completed_steps.map((s) => `  ✓ ${s}`),
+        ``,
+        recovery.in_progress_when_interrupted
+          ? `In Progress When Interrupted: ${recovery.in_progress_when_interrupted}`
+          : `Last Action: ${recovery.last_successful_action || "None"}`,
+        ``,
+        `Remaining Steps (${recovery.current_remaining_steps.length}):`,
+        ...recovery.current_remaining_steps.map((s) => `  ○ ${s}`),
+        ``,
+        `Cleanup Debt: ${recovery.cleanup_debt.filter((c) => !c.resolved).length} unresolved item(s)`,
+        `Active Resources: ${recovery.active_resources.browser_sessions.length} browser(s), ${recovery.active_resources.process_sessions.length} process(es)`,
+        `Last Checkpoint: ${recovery.last_checkpoint_timestamp || "None"}`,
+        ``,
+        recovery.instruction_for_agent,
+      ];
+
+      if (recovery.reconciliation.warnings.length > 0) {
+        summaryLines.push(``, `Reconciliation Warnings:`, ...recovery.reconciliation.warnings.map((w) => `  ! ${w}`));
+      }
+
+      return formatMcpResponse({
+        success: true,
+        action: `resume_run "${recovery.recovered_run_id}"`,
+        display_title: `Resumed run ${recovery.recovered_run_id}`,
+        text: summaryLines.join("\n"),
+        summary: `Resumed run ${recovery.recovered_run_id}: ${recovery.completed_steps.length} completed, ${recovery.current_remaining_steps.length} remaining`,
+        data: recovery,
+        warnings: recovery.reconciliation.warnings,
+        verification: { performed: true, passed: true, method: "run_reconciliation" },
+      });
+    }
+  );
+
+  // 73. complete_run
+  registerTool(
+    "complete_run",
+    "Marks a durable run as completed, auditing cleanup debt, open browser sessions, and running processes.",
+    {
+      run_id: z.string().optional().describe("Run ID to complete. Defaults to active run."),
+      status: z.enum(["completed", "failed", "abandoned"]).optional().describe("Final run status. Defaults to 'completed'."),
+      notes: z.string().optional().describe("Final completion notes or verification findings."),
+    },
+    async ({ run_id, status, notes }) => {
+      const res = await runManager.completeRun(run_id, { status, notes });
+      return formatMcpResponse({
+        success: true,
+        action: `complete_run "${res.run.run_id}"`,
+        display_title: `Run ${res.status}: ${res.run.run_id}`,
+        text: [
+          `Run ${res.run.run_id} marked as ${res.status}.`,
+          `Clean State: ${res.is_clean ? "CLEAN (no unresolved debt)" : "DEBT REMAINING"}`,
+          ...res.cleanup_warnings.map((w) => `  ! Warning: ${w}`),
+          notes ? `Notes: ${notes}` : "",
+        ]
+          .filter(Boolean)
+          .join("\n"),
+        summary: `Run ${res.run.run_id} completed (${res.is_clean ? "clean" : "with cleanup warnings"})`,
+        data: res,
+        warnings: res.cleanup_warnings,
+        verification: { performed: true, passed: true, method: "run_completion_audit" },
+      });
+    }
+  );
+
+  // 74. list_runs
+  registerTool(
+    "list_runs",
+    "Lists all durable runs stored under <server_root>/.verity with status, goal, timestamps, and step counts.",
+    {
+      status: z.enum(["all", "running", "interrupted", "completed", "failed", "abandoned"]).optional().describe("Filter by status. Defaults to all."),
+      limit: z.number().int().positive().optional().describe("Maximum runs to return. Defaults to 20."),
+    },
+    async ({ status, limit }) => {
+      const filterStatus = status === "all" ? undefined : status;
+      const runs = await runManager.listRuns({ status: filterStatus, limit });
+      const textLines = [
+        `Persisted Runs (${runs.length}):`,
+        ...runs.map((r) => `  [${r.status.toUpperCase()}] ${r.run_id} | ${r.goal.slice(0, 50)} | Workspace: ${r.workspace} | Updated: ${r.updated_at}`),
+      ];
+      return formatMcpResponse({
+        success: true,
+        action: "list_runs",
+        display_title: "Persisted runs list",
+        text: runs.length > 0 ? textLines.join("\n") : "No persisted runs found.",
+        summary: `Found ${runs.length} persisted run(s)`,
+        data: { runs },
+        verification: { performed: true, passed: true, method: "run_journal_listing" },
+      });
+    }
+  );
+
+  // 75. get_run
+  registerTool(
+    "get_run",
+    "Gets complete structured state, summary, checkpoint, and optional events for a run.",
+    {
+      run_id: z.string().describe("Run ID to retrieve."),
+      include_events: z.boolean().optional().describe("Include event history from events.jsonl. Defaults to false."),
+      event_limit: z.number().int().positive().optional().describe("Maximum events to return if include_events is true. Defaults to 50."),
+    },
+    async ({ run_id, include_events, event_limit }) => {
+      const res = await runManager.getRun(run_id, { include_events, event_limit });
+      return formatMcpResponse({
+        success: true,
+        action: `get_run "${run_id}"`,
+        display_title: `Run details: ${run_id}`,
+        text: res.summary_markdown,
+        summary: `Run ${run_id} [${res.run.status}]: ${res.run.original_goal.slice(0, 50)}`,
+        data: res,
+        verification: { performed: true, passed: true, method: "run_journal_read" },
+      });
+    }
+  );
+
+  // 76. run_activity_read
+  registerTool(
+    "run_activity_read",
+    "Reads activity events from a run's durable events.jsonl with cursor pagination.",
+    {
+      run_id: z.string().optional().describe("Run ID to read events for. Defaults to active run."),
+      cursor: z.number().int().nonnegative().optional().describe("Cursor sequence number to read after. Defaults to 0."),
+      limit: z.number().int().positive().optional().describe("Maximum events to read. Defaults to 50."),
+    },
+    async ({ run_id, cursor, limit }) => {
+      const res = await runManager.readRunEvents(run_id, cursor ?? 0, limit ?? 50);
+      return formatMcpResponse({
+        success: true,
+        action: "run_activity_read",
+        display_title: `Run events: ${res.run_id || "active"}`,
+        text: `Retrieved ${res.events.length} events for run ${res.run_id} (cursor: ${res.cursor}, next_cursor: ${res.next_cursor}, total: ${res.total_events}).`,
+        summary: `Retrieved ${res.events.length} event(s) from run journal`,
+        data: res,
+        verification: { performed: true, passed: true, method: "run_events_journal_read" },
+      });
     }
   );
 

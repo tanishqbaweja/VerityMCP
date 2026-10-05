@@ -3,7 +3,8 @@ import { activityContextStorage } from "../observability/activity_stream.js";
 
 export type McpContentItem =
   | { type: "text"; text: string }
-  | { type: "image"; data: string; mimeType: string };
+  | { type: "image"; data: string; mimeType: string }
+  | { type: "resource"; resource: { uri: string; mimeType?: string; text?: string; blob?: string } };
 
 export interface McpToolResponse {
   content: McpContentItem[];
@@ -15,6 +16,7 @@ export function formatMcpResponse<T = unknown>(
   res: StandardToolResponse<T>,
   options?: {
     image?: { data: string; mimeType: string };
+    resource?: { uri: string; mimeType?: string; text?: string; blob?: string };
     isError?: boolean;
   }
 ): McpToolResponse {
@@ -145,6 +147,14 @@ export function formatMcpResponse<T = unknown>(
       type: "image",
       data: options.image.data,
       mimeType: options.image.mimeType || "image/png",
+    });
+  }
+
+  // 3. Resource payload if supplied (e.g., MCP App UI)
+  if (options?.resource) {
+    content.push({
+      type: "resource",
+      resource: options.resource,
     });
   }
 
