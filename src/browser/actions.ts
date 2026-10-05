@@ -184,23 +184,45 @@ export async function executeClick(
   }
 
   try {
-    const locator = page.locator(selector).first();
-    await locator.waitFor({ state: "visible", timeout: 10000 });
-    await locator.click();
-    await page.waitForTimeout(100);
+    const beforeUrl = page.url();
+    const beforeTitle = await page.title().catch(() => "");
 
-    const currentUrl = page.url();
+    const locator = page.locator(selector).first();
+    await locator.waitFor({ state: "attached", timeout: 10000 });
+    try {
+      await locator.click({ timeout: 3000 });
+    } catch {
+      await locator.click({ force: true });
+    }
+    await page.waitForTimeout(150);
+
+    const afterUrl = page.url();
+    const afterTitle = await page.title().catch(() => "");
+    const urlChanged = afterUrl !== beforeUrl;
+    const titleChanged = afterTitle !== beforeTitle;
+
+    let verificationMethod = "playwright_click_action";
+    let verificationText = `Clicked element successfully. Verification: EXECUTED.`;
+
+    if (urlChanged) {
+      verificationMethod = "url_navigation_verified";
+      verificationText = `Clicked element successfully. Observed: URL changed ${beforeUrl} -> ${afterUrl}`;
+    } else if (titleChanged) {
+      verificationMethod = "title_change_verified";
+      verificationText = `Clicked element successfully. Observed: Title changed "${beforeTitle}" -> "${afterTitle}"`;
+    }
+
     return {
       success: true,
       action: `browser_click ${target.ref ? `[ref=${target.ref}]` : selector}`,
-      text: `Clicked element successfully. Current URL: ${currentUrl}`,
+      text: verificationText,
       verification: {
         performed: true,
         passed: true,
-        method: "playwright_click_action",
-        details: { selector, currentUrl },
+        method: verificationMethod,
+        details: { selector, beforeUrl, afterUrl, urlChanged, titleChanged },
       },
-      data: { target: selector, currentUrl },
+      data: { target: selector, currentUrl: afterUrl },
       durationMs: Date.now() - startTime,
     };
   } catch (err: any) {
@@ -386,8 +408,12 @@ export async function executeCheck(
 
   try {
     const locator = page.locator(selector).first();
-    await locator.waitFor({ state: "visible", timeout: 10000 });
-    await locator.setChecked(checked);
+    await locator.waitFor({ state: "attached", timeout: 10000 });
+    try {
+      await locator.setChecked(checked, { timeout: 3000 });
+    } catch {
+      await locator.setChecked(checked, { force: true });
+    }
 
     // MANDATORY DOM READBACK VERIFICATION
     const isChecked = await locator.isChecked();

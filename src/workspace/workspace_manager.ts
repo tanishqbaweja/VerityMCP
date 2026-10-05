@@ -105,7 +105,7 @@ export class WorkspaceManager {
     }
 
     if (skills.length > 0) {
-      lines.push(`Discovered Skills (${skills.length}): ${skills.map((s) => s.name).join(", ")}`);
+      lines.push(`Discovered Skills (${skills.length}): ${skills.map((s) => `${s.name} [${s.source}]`).join(", ")}`);
     }
 
     if (instructions) {

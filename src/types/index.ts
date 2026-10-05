@@ -68,6 +68,12 @@ export interface ShellInfo {
   executable: string;
   description: string;
   version?: string;
+  status?: "healthy" | "available" | "unavailable" | "broken";
+  healthProbe?: {
+    healthy: boolean;
+    reason?: string;
+    version?: string;
+  };
 }
 
 export interface DetectedShells {

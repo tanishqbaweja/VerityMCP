@@ -81,4 +81,44 @@ describe("DevSpace 4.0 First-Class Browser Automation Engine", () => {
       await fs.unlink(shotRes.toolResponse.data.filePath).catch(() => {});
     }
   });
+
+  it("resolves custom relative screenshot path against workspace root and verifies persistence", async () => {
+    const session = await browserManager.getSession("test_session_screenshot");
+    const testRelPath = ".devspace4-test-screenshot.png";
+    const nestedRelPath = "test-results/browser/nested-shot.png";
+
+    // 1. Test flat relative path
+    const shot1 = await executeBrowserScreenshot({
+      session,
+      outputPath: testRelPath,
+    });
+    assert.strictEqual(shot1.toolResponse.success, true);
+    assert.strictEqual(shot1.toolResponse.verification.passed, true);
+    assert.strictEqual(shot1.toolResponse.data?.requestedPath, testRelPath);
+    assert.ok(shot1.toolResponse.data?.resolvedPath.endsWith(testRelPath));
+    assert.ok(shot1.toolResponse.data?.bytes! > 0);
+    assert.ok(shot1.toolResponse.data?.sha256);
+    assert.ok(shot1.imagePayload.data.length > 50);
+
+    // Verify file actually exists on disk
+    const stat1 = await fs.stat(shot1.toolResponse.data?.resolvedPath!);
+    assert.ok(stat1.size > 0);
+    await fs.unlink(shot1.toolResponse.data?.resolvedPath!).catch(() => {});
+
+    // 2. Test nested relative path with recursive mkdir
+    const shot2 = await executeBrowserScreenshot({
+      session,
+      outputPath: nestedRelPath,
+    });
+    assert.strictEqual(shot2.toolResponse.success, true);
+    assert.strictEqual(shot2.toolResponse.verification.passed, true);
+    assert.strictEqual(shot2.toolResponse.data?.requestedPath, nestedRelPath);
+    assert.ok(shot2.toolResponse.data?.resolvedPath.includes("nested-shot.png"));
+
+    const stat2 = await fs.stat(shot2.toolResponse.data?.resolvedPath!);
+    assert.ok(stat2.size > 0);
+    await fs.unlink(shot2.toolResponse.data?.resolvedPath!).catch(() => {});
+    await fs.rm("test-results", { recursive: true, force: true }).catch(() => {});
+  });
 });
+

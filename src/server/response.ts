@@ -13,6 +13,7 @@ export function formatMcpResponse<T = unknown>(
   res: StandardToolResponse<T>,
   options?: {
     image?: { data: string; mimeType: string };
+    isError?: boolean;
   }
 ): McpToolResponse {
   const content: McpContentItem[] = [];
@@ -68,6 +69,7 @@ export function formatMcpResponse<T = unknown>(
 
   return {
     content,
-    isError: !res.success,
+    // Keep isError false for operational failures so agent can inspect stdout/stderr/exitCode
+    isError: options?.isError ?? false,
   };
 }

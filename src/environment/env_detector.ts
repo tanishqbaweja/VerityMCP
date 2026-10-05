@@ -92,10 +92,22 @@ function formatEnvReport(report: EnvironmentReport): string {
     .filter(([_, info]) => info.installed)
     .map(([name, info]) => `${name}: ${info.version || "yes"}`);
 
+  const bashResolution = report.shells.gitBash.available
+    ? `git-bash (${report.shells.gitBash.executable})`
+    : report.shells.wsl.available
+    ? `wsl (${report.shells.wsl.executable})`
+    : "unavailable";
+
   return [
     `=== Environment Profile ===`,
     `OS: ${report.os.platform} ${report.os.release} (${report.os.arch}, ${report.os.cpus} CPUs, ${report.os.memoryGB} GB RAM)`,
     `Default Shell: ${report.shells.defaultShell}`,
+    `Bash alias resolves to: ${bashResolution}`,
+    `Shells:`,
+    `  powershell: ${report.shells.powershell.status || (report.shells.powershell.available ? "healthy" : "unavailable")} (${report.shells.powershell.description})`,
+    `  cmd: ${report.shells.cmd.status || (report.shells.cmd.available ? "healthy" : "unavailable")}`,
+    `  git-bash: ${report.shells.gitBash.status || (report.shells.gitBash.available ? "healthy" : "unavailable")} (${report.shells.gitBash.description})`,
+    `  wsl: ${report.shells.wsl.status || (report.shells.wsl.available ? "healthy" : "unavailable")}${report.shells.wsl.healthProbe?.reason ? ` (${report.shells.wsl.healthProbe.reason})` : ""}`,
     `Detected Dev Tools (${installedTools.length}):`,
     ...installedTools.map((t) => `  - ${t}`),
   ].join("\n");
