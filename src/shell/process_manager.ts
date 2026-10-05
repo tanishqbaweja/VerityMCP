@@ -102,11 +102,21 @@ export class ProcessManager {
 
   public async execCommand(options: ExecCommandOptions): Promise<StandardToolResponse<{
     sessionId: string;
+    session_id?: string | null;
+    shell?: string;
+    cwd?: string;
+    pid?: number;
+    running?: boolean;
+    exit_code?: number | null;
+    duration_ms?: number;
+    durationMs?: number;
     status: ProcessStatus;
     exitCode: number | null;
     isBackground: boolean;
     yielded: boolean;
     nextCursor: number;
+    stdout?: string;
+    stderr?: string;
   }>> {
     const startTime = Date.now();
     const {
@@ -282,11 +292,21 @@ export class ProcessManager {
         },
         data: {
           sessionId: session.id,
-          status: session.status,
+          session_id: session.id,
+          shell: session.shell,
+          cwd: session.cwd,
+          pid: session.pid,
+          running: false,
+          exit_code: code,
           exitCode: code,
+          duration_ms: wallTimeMs,
+          durationMs: wallTimeMs,
+          status: session.status,
           isBackground: false,
           yielded: false,
           nextCursor: session.outputChunks.length,
+          stdout: formattedStdout.text,
+          stderr: formattedStderr.text,
         },
         durationMs: wallTimeMs,
       };

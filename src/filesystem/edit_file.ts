@@ -17,6 +17,13 @@ export interface EditFileOptions {
 
 export interface EditFileData {
   filePath: string;
+  path?: string;
+  operation?: string;
+  before_sha256?: string;
+  after_sha256?: string;
+  additions?: number;
+  removals?: number;
+  verified?: boolean;
   replacements: number;
   diffPatch: string;
   oldSizeBytes: number;
@@ -206,8 +213,13 @@ export async function executeEditFile(
   }
 
   const sha256 = (verification.details?.hash as string) || "";
+  const beforeSha256 = crypto.createHash("sha256").update(Buffer.from(originalContent)).digest("hex");
   const oldSizeBytes = Buffer.byteLength(originalContent, "utf-8");
   const newSizeBytes = Buffer.byteLength(newContent, "utf-8");
+
+  const diffLines = diffPatch.split("\n");
+  const additions = diffLines.filter((l) => l.startsWith("+") && !l.startsWith("+++")).length;
+  const removals = diffLines.filter((l) => l.startsWith("-") && !l.startsWith("---")).length;
 
   return {
     success: true,
@@ -215,7 +227,14 @@ export async function executeEditFile(
     text: `Successfully edited "${filePath}" (${replacements} replacement${replacements > 1 ? "s" : ""}).\n\n${diffPatch}`,
     verification,
     data: {
+      path: filePath,
       filePath,
+      operation: "update",
+      before_sha256: beforeSha256,
+      after_sha256: sha256,
+      additions,
+      removals,
+      verified: true,
       replacements,
       diffPatch,
       oldSizeBytes,
