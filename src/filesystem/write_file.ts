@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { resolveWorkspacePath } from "../security/roots.js";
+import { resolvePathWithWorkspace } from "../security/roots.js";
+import { activityStream } from "../observability/activity_stream.js";
 import { verifyFileContent } from "../verification/index.js";
 import type { StandardToolResponse } from "../types/index.js";
 
@@ -33,12 +34,13 @@ export async function executeWriteFile(
     overwrite = true,
   } = options;
 
-  let resolvedPath: string;
+  let pathRes;
   try {
-    resolvedPath = resolveWorkspacePath(workspaceRoot, filePath, allowedRoots);
+    pathRes = resolvePathWithWorkspace(workspaceRoot, filePath, allowedRoots);
   } catch (err: any) {
     return {
       success: false,
+      error_code: "SECURITY_VIOLATION",
       action: `write_file "${filePath}"`,
       text: `Path validation failed: ${err.message}`,
       verification: {
@@ -50,6 +52,17 @@ export async function executeWriteFile(
       durationMs: Date.now() - startTime,
     };
   }
+
+  const resolvedPath = pathRes.resolvedPath;
+
+  activityStream.emit({
+    type: "action_started",
+    title: `Writing ${path.basename(filePath)}`,
+    purpose: "Write file content to disk and verify SHA-256 readback",
+    tool: "write_file",
+    target: { path: resolvedPath },
+    details: { withinWorkspace: pathRes.withinWorkspace },
+  });
 
   // Check if file already exists
   let exists = false;
@@ -159,9 +172,29 @@ export async function executeWriteFile(
   const bytesWritten = Buffer.byteLength(content, "utf-8");
   const sha256 = (verification.details?.hash as string) || "";
 
+  activityStream.emit({
+    type: "verification",
+    title: "Disk write & SHA-256 verified",
+    tool: "write_file",
+    evidence: { sha256, bytesWritten },
+  });
+
+  activityStream.emit({
+    type: "action_completed",
+    title: `Wrote ${bytesWritten} bytes to ${path.basename(filePath)}`,
+    tool: "write_file",
+    target: { path: resolvedPath },
+  });
+
   return {
     success: true,
     action: `write_file "${filePath}"`,
+    display_title: `Writing ${path.basename(filePath)}`,
+    display_status: "verified",
+    within_workspace: pathRes.withinWorkspace,
+    workspace_root: pathRes.workspaceRoot,
+    resolved_path: resolvedPath,
+    warning: pathRes.warning,
     text: `Successfully wrote ${bytesWritten} bytes to "${filePath}" (SHA-256: ${sha256.slice(0, 16)}...). Verification passed.`,
     verification,
     data: {

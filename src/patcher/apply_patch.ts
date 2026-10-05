@@ -3,6 +3,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import * as diff from "diff";
 import { resolveWorkspacePath } from "../security/roots.js";
+import { activityStream } from "../observability/activity_stream.js";
 import {
   verifyFileContent,
   verifyFileExistence,
@@ -445,6 +446,13 @@ export async function executeApplyPatch(
     };
   }
 
+  activityStream.emit({
+    type: "action_started",
+    title: "Applying patch",
+    purpose: "Parse diff hunks and apply verified atomic updates",
+    tool: "apply_patch",
+  });
+
   let filePatches: FilePatch[];
   try {
     filePatches = parsePatch(patch);
@@ -762,9 +770,24 @@ export async function executeApplyPatch(
     .filter(Boolean)
     .join("\n");
 
+  activityStream.emit({
+    type: "verification",
+    title: "Patch disk write and SHA-256 verified",
+    tool: "apply_patch",
+    evidence: { plannedOpsCount: plannedOps.length },
+  });
+
+  activityStream.emit({
+    type: "action_completed",
+    title: `Patch applied successfully across ${plannedOps.length} file(s)`,
+    tool: "apply_patch",
+  });
+
   return {
     success: true,
     action: "apply_patch",
+    display_title: "Applying patch",
+    display_status: "verified",
     text: summary,
     verification: {
       performed: true,

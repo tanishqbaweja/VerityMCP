@@ -24,7 +24,10 @@ import {
 import { executeGitConflicts, executeGitStatus } from "../src/git/git_ops.js";
 import { executeEnterWorktree, executeExitWorktree } from "../src/git/worktrees.js";
 import { executeReadNotebook, executeEditNotebook } from "../src/notebook/notebook_engine.js";
-import { SubagentEngine } from "../src/agents/subagent_engine.js";
+import { activityStream } from "../src/observability/activity_stream.js";
+import { executeDesktopScreenshot } from "../src/desktop/desktop_control.js";
+import { executeReadFile } from "../src/filesystem/read_file.js";
+import { setWorkspaceAccessMode } from "../src/security/roots.js";
 import { workspaceManager } from "../src/workspace/workspace_manager.js";
 import { observabilityManager } from "../src/observability/diagnostics.js";
 
@@ -490,38 +493,267 @@ describe("VerityMCP Polish & Hardening Acceptance Suite", () => {
     await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
   });
 
-  it("verifies subagent bounded execution, personas, and plan mode lifecycle", () => {
-    const engine = new SubagentEngine();
+  it("verifies activity stream operational events, cursor pagination, and clear", () => {
+    activityStream.clear();
 
-    // Delegate explore
-    const exploreRes = engine.delegateSubagent("Explore module layout", "explore");
-    assert.strictEqual(exploreRes.success, true);
-    assert.strictEqual(exploreRes.data?.persona, "explore");
-    assert.strictEqual(exploreRes.data?.status, "completed");
+    // 1. Emit operational events
+    const e1 = activityStream.emit({
+      type: "action_started",
+      title: "Compile target",
+      tool: "exec_command",
+      target: "dist",
+      call_id: "call_test_1",
+    });
+    assert.strictEqual(e1.seq, 1);
+    assert.strictEqual(e1.type, "action_started");
 
-    // Delegate coding
-    const codingRes = engine.delegateSubagent("Implement parser feature", "coding");
-    assert.strictEqual(codingRes.success, true);
-    assert.strictEqual(codingRes.data?.persona, "coding");
+    const e2 = activityStream.emit({
+      type: "verification",
+      title: "Verify build output",
+      tool: "exec_command",
+      evidence: { passed: true },
+      call_id: "call_test_1",
+    });
+    assert.strictEqual(e2.seq, 2);
 
-    // Delegate review
-    const reviewRes = engine.delegateSubagent("Review diffs for safety", "review");
-    assert.strictEqual(reviewRes.success, true);
+    const e3 = activityStream.emit({
+      type: "warning",
+      title: "High memory utilization",
+      reason: "Heap usage at 85%",
+    });
+    assert.strictEqual(e3.seq, 3);
 
-    // List sessions
-    const listRes = engine.listSubagents();
-    assert.strictEqual(listRes.success, true);
-    assert.strictEqual(listRes.data?.length, 3);
+    const e4 = activityStream.emit({
+      type: "action_completed",
+      title: "Build succeeded",
+      tool: "exec_command",
+      call_id: "call_test_1",
+    });
+    assert.strictEqual(e4.seq, 4);
 
-    // Plan mode toggle and exit
-    const enterPlan = engine.enterPlanMode();
-    assert.strictEqual(enterPlan.success, true);
-    assert.strictEqual(enterPlan.data?.active, true);
+    // 2. Read with pagination
+    const page1 = activityStream.read({ cursor: 0, limit: 2 });
+    assert.strictEqual(page1.events.length, 2);
+    assert.strictEqual(page1.has_more, true);
+    assert.strictEqual(page1.next_cursor, 2);
+    assert.strictEqual(page1.total_retained, 4);
 
-    const exitPlan = engine.exitPlanMode("Refactored plan", ["step 1", "step 2"]);
-    assert.strictEqual(exitPlan.success, true);
-    assert.strictEqual(exitPlan.data?.active, false);
-    assert.strictEqual(exitPlan.data?.activePlan, "Refactored plan");
+    const page2 = activityStream.read({ cursor: 2, limit: 10 });
+    assert.strictEqual(page2.events.length, 2);
+    assert.strictEqual(page2.has_more, false);
+    assert.strictEqual(page2.next_cursor, 4);
+
+    // 3. Filter by type
+    const warnings = activityStream.read({ cursor: 0, type: "warning" });
+    assert.strictEqual(warnings.events.length, 1);
+    assert.strictEqual(warnings.events[0].title, "High memory utilization");
+
+    // 4. Clear
+    const clearRes = activityStream.clear();
+    assert.strictEqual(clearRes.cleared_count, 4);
+    assert.strictEqual(activityStream.size(), 0);
+  });
+
+  it("verifies workspace access semantics and external directory resolution", async () => {
+    const root = process.cwd();
+    await workspaceManager.openWorkspace(root);
+    setWorkspaceAccessMode("warn");
+
+    // 1. In-workspace relative resolution
+    const localRes = (await executeReadFile({
+      filePath: "package.json",
+      workspaceRoot: root,
+    })).toolResponse;
+    assert.strictEqual(localRes.success, true);
+    assert.strictEqual(localRes.within_workspace, true);
+    assert.strictEqual(localRes.workspace_root?.toLowerCase(), root.toLowerCase());
+
+    // 2. Explicit external path resolution (Trebell or system temp)
+    const trebellPath = "H:\\Github Repositories\\Trebell";
+    const trebellExists = await fs.stat(trebellPath).then(() => true).catch(() => false);
+
+    if (trebellExists) {
+      // Direct file read outside active workspace
+      const extRead = (await executeReadFile({
+        filePath: path.join(trebellPath, "package.json"),
+        workspaceRoot: root,
+      })).toolResponse;
+      assert.strictEqual(extRead.success, true);
+      assert.strictEqual(extRead.within_workspace, false);
+      assert.ok(extRead.warning?.includes("outside active workspace"));
+
+      // Open Trebell workspace directly
+      const openTrebell = await workspaceManager.openWorkspace(trebellPath);
+      assert.strictEqual(openTrebell.success, true);
+      assert.strictEqual(
+        workspaceManager.getActiveWorkspaceRoot().toLowerCase(),
+        path.resolve(trebellPath).toLowerCase()
+      );
+
+      // Restore workspace
+      await workspaceManager.openWorkspace(root);
+      assert.strictEqual(
+        workspaceManager.getActiveWorkspaceRoot().toLowerCase(),
+        root.toLowerCase()
+      );
+    }
+  });
+
+  it("verifies browser generation-bound refs and stale ref rejection", async () => {
+    const sess = await browserManager.getSession("stale_test_sess");
+    // 1. Navigate to first document
+    const nav1 = await executeNavigate(
+      sess,
+      "data:text/html,<html><body><button id='b1'>First Button</button></body></html>"
+    );
+    assert.strictEqual(nav1.success, true);
+
+    const snap1 = await takeBrowserSnapshot(sess);
+    assert.strictEqual(snap1.success, true);
+    const firstRef = snap1.data?.elements[0]?.ref;
+    assert.ok(firstRef, "Ref found on first document");
+    assert.ok(firstRef.startsWith("d"), "Ref includes generation prefix");
+
+    // 2. Navigate to second document (increments generation)
+    const nav2 = await executeNavigate(
+      sess,
+      "data:text/html,<html><body><button id='b2'>Second Button</button></body></html>"
+    );
+    assert.strictEqual(nav2.success, true);
+
+    // 3. Attempt to interact with stale ref
+    const staleClick = await executeClick(sess, { ref: firstRef });
+    assert.strictEqual(staleClick.success, false);
+    assert.strictEqual(staleClick.error_code, "STALE_ELEMENT_REFERENCE");
+    assert.ok(staleClick.text.includes("STALE_ELEMENT_REFERENCE"));
+
+    await browserManager.closeSession("stale_test_sess");
+  });
+
+  it("verifies desktop screenshot capture, disk persistence, and SHA-256 integrity", async () => {
+    const shot = await executeDesktopScreenshot();
+    const res = shot.toolResponse;
+    assert.strictEqual(res.success, true);
+    assert.ok(res.data?.filePath, "Screenshot file path returned");
+    assert.ok(res.data?.sha256, "SHA-256 hash returned");
+    assert.ok(shot.imagePayload?.data, "Base64 payload returned");
+
+    // Verify file exists on disk
+    const stat = await fs.stat(res.data!.filePath);
+    assert.ok(stat.size > 0, "Screenshot file has non-zero size");
+
+    // Verify SHA-256 matches actual file bytes
+    const bytes = await fs.readFile(res.data!.filePath);
+    const expectedHash = crypto.createHash("sha256").update(bytes).digest("hex");
+    assert.strictEqual(res.data!.sha256, expectedHash);
+
+    // Cleanup screenshot file
+    await fs.unlink(res.data!.filePath).catch(() => {});
+  });
+
+  it("verifies exec_command state verification and stderr warnings", async () => {
+    const root = process.cwd();
+    const tempTestFile = path.join(root, "exec_verify_test.tmp");
+    await fs.rm(tempTestFile, { force: true }).catch(() => {});
+
+    // 1. Default: state_verification is not_observable
+    const defaultRes = await processManager.execCommand({
+      command: "echo test",
+      cwd: root,
+      shell: "powershell",
+    });
+    assert.strictEqual(defaultRes.success, true);
+    assert.strictEqual(defaultRes.state_verification?.status, "not_observable");
+
+    // 2. Explicit postcondition: path_exists
+    const fileCreateRes = await processManager.execCommand({
+      command: `[System.IO.File]::WriteAllText("${tempTestFile.replace(/\\/g, "/")}", "verity")`,
+      cwd: root,
+      shell: "powershell",
+      verify: {
+        path_exists: tempTestFile,
+      },
+    });
+    assert.strictEqual(fileCreateRes.success, true);
+    assert.strictEqual(fileCreateRes.state_verification?.status, "passed");
+
+    // Clean up temp file
+    await fs.rm(tempTestFile, { force: true }).catch(() => {});
+
+    // 3. Stderr emitted despite exit code 0 triggers warning
+    const stderrRes = await processManager.execCommand({
+      command: `Write-Error "test warning stream" -ErrorAction Continue; exit 0`,
+      cwd: root,
+      shell: "powershell",
+    });
+    assert.strictEqual(stderrRes.success, true);
+    assert.strictEqual(stderrRes.stderr_present, true);
+    assert.ok(stderrRes.warnings && stderrRes.warnings.length > 0);
+  });
+
+  it("verifies PowerShell UTF-8 encoding without mojibake", async () => {
+    const res = await processManager.execCommand({
+      command: `Write-Output "✓ [OK] Unicode test: 🚀 日本語"`,
+      cwd: process.cwd(),
+      shell: "powershell",
+    });
+    assert.strictEqual(res.success, true);
+    assert.ok(res.stdout.includes("✓"), "Checkmark ✓ preserved");
+    assert.ok(res.stdout.includes("🚀"), "Rocket 🚀 preserved");
+    assert.ok(res.stdout.includes("日本語"), "Japanese 日本語 preserved");
+    assert.ok(!res.stdout.includes("\uFFFD"), "No replacement characters");
+  });
+
+  it("verifies reliability category classifications", () => {
+    // 1. Guarded refusal
+    observabilityManager.logToolEvent({
+      toolName: "revert_changes",
+      action: "revert_changes",
+      success: false,
+      errorCode: "WORKTREE_DIRTY",
+      durationMs: 10,
+      timestamp: Date.now(),
+    });
+
+    // 2. Operational failure
+    observabilityManager.logToolEvent({
+      toolName: "read_file",
+      action: "read_file",
+      success: false,
+      errorCode: "FILE_NOT_FOUND",
+      durationMs: 5,
+      timestamp: Date.now(),
+    });
+
+    // 3. Verification failure
+    observabilityManager.logToolEvent({
+      toolName: "apply_patch",
+      action: "apply_patch",
+      success: false,
+      errorCode: "PATCH_VERIFICATION_FAILED",
+      verificationPassed: false,
+      durationMs: 15,
+      timestamp: Date.now(),
+    });
+
+    // 4. Protocol failure
+    observabilityManager.logToolEvent({
+      toolName: "edit_notebook",
+      action: "edit_notebook",
+      success: false,
+      errorCode: "NOTEBOOK_INVALID",
+      durationMs: 8,
+      timestamp: Date.now(),
+    });
+
+    const diag = observabilityManager.getDiagnostics();
+    assert.strictEqual(diag.success, true);
+    const reliability = diag.data?.reliability as Record<string, any>;
+    assert.ok(reliability, "Reliability metrics present");
+    assert.ok(reliability.guarded_refusals >= 1, "Guarded refusal tracked");
+    assert.ok(reliability.operational_failures >= 1, "Operational failure tracked");
+    assert.ok(reliability.verification_failures >= 1, "Verification failure tracked");
+    assert.ok(reliability.protocol_failures >= 1, "Protocol failure tracked");
   });
 
   after(async () => {

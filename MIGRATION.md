@@ -61,8 +61,8 @@ VerityMCP was built around one non-negotiable principle:
 | **Git Operations** | Shell git | `git_status`, `git_diff` | Shell git | `git_status`, `git_diff`, `show_changes`, `revert_changes` | Unified changes overview, uncommitted diffs, and verified git revert with status audit. |
 | **Git Worktrees** | Shell worktree | Limited | None | `worktree_create`, `worktree_list`, `worktree_remove` | Isolated worktree management with dirty state safety checks. |
 | **Task Planning** | None | `task_*` | None | `task_create`, `task_update`, `task_list` | Persistent task store for structured multi-step planning and tracking. |
-| **Bounded Subagents** | None | None | `delegate_subagent` | `delegate_subagent`, `list_subagents`, `enter_plan_mode`, `exit_plan_mode` | Subagent execution engine with specialized personas (`explore`, `coding`, `review`, `verification`, `planning`). |
-| **Observability** | None | None | None | `verity_diagnostics` | System diagnostics, shell health, browser status, and tool audit trail. |
+| **Live Activity Stream** | None | None | None | `activity_list`, `activity_read`, `activity_clear` | First-class operational event streaming with cursor pagination without exposing model chain-of-thought. |
+| **Observability & Tests** | None | None | None | `verity_diagnostics`, `verity_self_test`, `verity_acceptance_test` | Comprehensive system diagnostics, audit logs, and non-destructive end-to-end self/acceptance tests. |
 
 ---
 

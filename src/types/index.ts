@@ -17,6 +17,8 @@ export type StandardErrorCode =
   | "ELEMENT_NOT_EDITABLE"
   | "BROWSER_SESSION_NOT_FOUND"
   | "SCREENSHOT_WRITE_FAILED"
+  | "TRACE_WRITE_FAILED"
+  | "PATH_INVALID"
   | "GIT_CONFLICT"
   | "SECURITY_VIOLATION"
   | "INVALID_ARGUMENT"
@@ -59,6 +61,15 @@ export interface StandardToolResponse<T = unknown> {
   action: string;
   text: string;
   summary?: string;
+  call_id?: string;
+  display_title?: string;
+  display_status?: "running" | "verified" | "completed" | "failed" | "warning" | "blocked";
+  within_workspace?: boolean;
+  workspace_root?: string;
+  resolved_path?: string;
+  warning?: string;
+  warnings?: string[];
+  stderr_present?: boolean;
   error_code?: StandardErrorCode | string;
   verification: VerificationResult;
   execution_verification?: ExecutionVerification;

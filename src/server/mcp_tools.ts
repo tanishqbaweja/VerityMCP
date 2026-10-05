@@ -67,7 +67,7 @@ import {
   executeRevertChanges,
 } from "../git/git_ops.js";
 import { taskStore } from "../tasks/task_store.js";
-import { subagentEngine } from "../agents/subagent_engine.js";
+import { activityStream } from "../observability/activity_stream.js";
 import { detectEnvironment } from "../environment/env_detector.js";
 import { observabilityManager } from "../observability/diagnostics.js";
 
@@ -97,10 +97,16 @@ All filesystem mutations, patch applications, git reverts, process executions, b
       const startTime = Date.now();
       try {
         const response = await handler(args);
+        const structured = response._structured;
+        const success = structured ? structured.success : !response.isError;
+        const errorCode = structured?.error_code;
+        const verificationPassed = structured?.execution_verification?.status === "passed" && structured?.state_verification?.status !== "failed";
         observabilityManager.logToolEvent({
           toolName: name,
-          action: name,
-          success: !response.isError,
+          action: structured?.action || name,
+          success,
+          errorCode,
+          verificationPassed,
           durationMs: Date.now() - startTime,
           timestamp: Date.now(),
         });
@@ -110,6 +116,7 @@ All filesystem mutations, patch applications, git reverts, process executions, b
           toolName: name,
           action: name,
           success: false,
+          errorCode: "TOOL_ERROR",
           durationMs: Date.now() - startTime,
           timestamp: Date.now(),
         });
@@ -470,8 +477,17 @@ All filesystem mutations, patch applications, git reverts, process executions, b
       timeout_ms: z.number().int().positive().optional().describe("Overall timeout. Defaults to 60000ms."),
       yield_ms: z.number().int().positive().optional().describe("Yield window. If command exceeds this duration, yields running session. Defaults to 2000ms."),
       run_in_background: z.boolean().optional().describe("Run immediately in background. Defaults to false."),
+      verify: z
+        .object({
+          path_exists: z.string().optional().describe("Verifies that this path exists after command runs."),
+          path_absent: z.string().optional().describe("Verifies that this path does not exist after command runs."),
+          stdout_contains: z.string().optional().describe("Verifies that stdout contains this substring."),
+          exit_code: z.number().int().optional().describe("Expected exit code (defaults to 0)."),
+        })
+        .optional()
+        .describe("Explicit postconditions to verify command state effects."),
     },
-    async ({ command, shell, timeout_ms, yield_ms, run_in_background }) => {
+    async ({ command, shell, timeout_ms, yield_ms, run_in_background, verify }) => {
       const res = await processManager.execCommand({
         command,
         cwd: getRoot(),
@@ -479,6 +495,7 @@ All filesystem mutations, patch applications, git reverts, process executions, b
         timeoutMs: timeout_ms,
         yieldMs: yield_ms,
         runInBackground: run_in_background,
+        verify,
       });
       return formatMcpResponse(res);
     }
@@ -1274,54 +1291,96 @@ All filesystem mutations, patch applications, git reverts, process executions, b
     }
   );
 
-  // 60. delegate_subagent
+  // 60. activity_list
   registerTool(
-    "delegate_subagent",
-    "Spawns a bounded subagent with a specific persona ('explore', 'coding', 'review', 'verification', 'planning') to perform focused tasks.",
+    "activity_list",
+    "Lists retained live execution trace activity events (intent, actions, verifications, fallbacks, warnings, results) without leaking private model chain-of-thought.",
     {
-      task: z.string().describe("Specific subagent task prompt."),
-      persona: z.enum(["explore", "coding", "review", "verification", "planning"]).optional().describe("Subagent persona. Defaults to explore."),
-      context: z.string().optional().describe("Bounded context."),
+      limit: z.number().int().positive().optional().describe("Maximum number of events to list. Defaults to 50."),
     },
-    async ({ task, persona, context }) => {
-      const res = subagentEngine.delegateSubagent(task, persona, context);
-      return formatMcpResponse(res);
+    async ({ limit }) => {
+      const events = activityStream.list(limit ?? 50);
+      const summaryText =
+        events.length === 0
+          ? "No activity events recorded yet."
+          : events
+              .map(
+                (e) =>
+                  `[${e.timestamp}] #${e.seq} ${e.type.toUpperCase()}: ${e.title}${
+                    e.tool ? ` (tool: ${e.tool})` : ""
+                  }${e.reason ? ` - ${e.reason}` : ""}`
+              )
+              .join("\n");
+      return formatMcpResponse({
+        success: true,
+        action: "activity_list",
+        text: summaryText,
+        data: { events, total_retained: activityStream.size() },
+        verification: { performed: true, passed: true, method: "activity_stream" },
+      });
     }
   );
 
-  // 61. list_subagents
+  // 61. activity_read
   registerTool(
-    "list_subagents",
-    "Lists active and recently completed subagents.",
+    "activity_read",
+    "Reads activity stream events with cursor pagination metadata (cursor, next_cursor, has_more, total_retained).",
+    {
+      cursor: z.number().int().nonnegative().optional().describe("Cursor sequence number to read after. Defaults to 0."),
+      limit: z.number().int().positive().optional().describe("Maximum events to read. Defaults to 50."),
+      type: z
+        .enum([
+          "plan",
+          "action_started",
+          "action_progress",
+          "action_completed",
+          "verification",
+          "fallback",
+          "retry",
+          "warning",
+          "failure",
+          "cleanup",
+          "info",
+        ])
+        .optional()
+        .describe("Filter by event type."),
+      workspace_id: z.string().optional().describe("Filter by workspace ID."),
+      browser_session_id: z.string().optional().describe("Filter by browser session ID."),
+      process_session_id: z.string().optional().describe("Filter by process session ID."),
+    },
+    async ({ cursor, limit, type, workspace_id, browser_session_id, process_session_id }) => {
+      const result = activityStream.read({
+        cursor: cursor ?? 0,
+        limit: limit ?? 50,
+        type: type as any,
+        workspace_id,
+        browser_session_id,
+        process_session_id,
+      });
+      return formatMcpResponse({
+        success: true,
+        action: "activity_read",
+        text: `Retrieved ${result.events.length} activity events (cursor: ${result.cursor}, next_cursor: ${result.next_cursor}, has_more: ${result.has_more}, total_retained: ${result.total_retained}).`,
+        data: result,
+        verification: { performed: true, passed: true, method: "activity_stream_pagination" },
+      });
+    }
+  );
+
+  // 62. activity_clear
+  registerTool(
+    "activity_clear",
+    "Clears the live execution trace activity stream.",
     {},
     async () => {
-      const res = subagentEngine.listSubagents();
-      return formatMcpResponse(res);
-    }
-  );
-
-  // 62. enter_plan_mode
-  registerTool(
-    "enter_plan_mode",
-    "Enters Plan Mode to formulate and refine actions before direct execution.",
-    {},
-    async () => {
-      const res = subagentEngine.enterPlanMode();
-      return formatMcpResponse(res);
-    }
-  );
-
-  // 63. exit_plan_mode
-  registerTool(
-    "exit_plan_mode",
-    "Exits Plan Mode with an approved plan and resumes direct execution.",
-    {
-      plan: z.string().describe("The final approved plan text."),
-      approved_actions: z.array(z.string()).optional().describe("Approved action summaries."),
-    },
-    async ({ plan, approved_actions }) => {
-      const res = subagentEngine.exitPlanMode(plan, approved_actions);
-      return formatMcpResponse(res);
+      const cleared = activityStream.clear();
+      return formatMcpResponse({
+        success: true,
+        action: "activity_clear",
+        text: `Cleared ${cleared.cleared_count} activity stream events.`,
+        data: cleared,
+        verification: { performed: true, passed: true, method: "activity_stream_clear" },
+      });
     }
   );
 
@@ -1406,6 +1465,17 @@ All filesystem mutations, patch applications, git reverts, process executions, b
     {},
     async () => {
       const res = await observabilityManager.runSelfTest(getRoot());
+      return formatMcpResponse(res);
+    }
+  );
+
+  // 69. verity_acceptance_test
+  registerTool(
+    "verity_acceptance_test",
+    "Executes deep acceptance test suite covering atomic filesystem mutations, shell encodings, desktop screenshot capture, and browser lifecycle verification.",
+    {},
+    async () => {
+      const res = await observabilityManager.runAcceptanceTest(getRoot());
       return formatMcpResponse(res);
     }
   );

@@ -195,16 +195,18 @@ VerityMCP exposes a unified, production-ready tool surface organized across 12 e
 - `worktree_list`: Lists all active Git worktrees.
 - `worktree_remove`: Removes worktree with dirty-state safety guard.
 
-### 10. Planning & Bounded Subagents
+### 10. Planning & Tasks
 - `task_create`: Registers a goal in the persistent planning store.
 - `task_update`: Updates task state (`pending`, `in_progress`, `completed`, `failed`).
 - `task_list`: Inspects all tasks and execution progress.
-- `delegate_subagent`: Dispatches a bounded worker subagent with a dedicated persona (`explore`, `coding`, `review`, `verification`, `planning`).
-- `list_subagents`: Inspects subagent lifecycles and results.
-- `enter_plan_mode` / `exit_plan_mode`: Toggles execution mode boundaries.
 
-### 11. System Diagnostics & Observability
+### 11. Live Observability & Diagnostics
+- `activity_list`: Lists live activity stream events (intent, action, verifications, fallbacks, warnings, results).
+- `activity_read`: Cursor-paginated operational stream for live execution monitoring.
+- `activity_clear`: Resets active activity stream buffer.
 - `verity_diagnostics`: Returns system health, available shells, browser status, and tool reliability audit logs.
+- `verity_self_test`: Fast automated self-test of core subsystems.
+- `verity_acceptance_test`: Deep end-to-end acceptance test verification.
 
 ---
 

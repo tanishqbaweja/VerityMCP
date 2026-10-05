@@ -4,6 +4,8 @@ import os from "node:os";
 import { randomUUID } from "node:crypto";
 import type { BrowserSession } from "./browser_manager.js";
 import { browserManager } from "./browser_manager.js";
+import { workspaceManager } from "../workspace/workspace_manager.js";
+import { activityStream } from "../observability/activity_stream.js";
 import { verifyFileExistence } from "../verification/index.js";
 import type { StandardToolResponse } from "../types/index.js";
 
@@ -13,22 +15,42 @@ function resolveTarget(
 ): string {
   if (target.ref) {
     const cleanRef = target.ref.replace(/^@/, "");
-    const found = session.elementRefs.get(cleanRef);
-    if (!found) {
-      const historical = session.refHistory.get(cleanRef);
-      if (historical) {
+
+    // 1. Check generation prefix: e.g. d1:e2
+    const genMatch = cleanRef.match(/^d(\d+):e\d+$/);
+    if (genMatch) {
+      const refGen = parseInt(genMatch[1], 10);
+      if (refGen !== session.documentGeneration) {
         const err: any = new Error(
-          `STALE_ELEMENT_REFERENCE: Element "${target.ref}" was present in snapshot v${historical.version}, but is not present in current snapshot v${session.currentSnapshotVersion}. The page DOM changed or element was removed. Please take a new browser_snapshot.`
+          `STALE_ELEMENT_REFERENCE: Ref "${target.ref}" belongs to document generation ${refGen}, but current generation is ${session.documentGeneration}. The page has navigated or reloaded.`
         );
         err.code = "STALE_ELEMENT_REFERENCE";
-        err.historicalVersion = historical.version;
-        err.currentVersion = session.currentSnapshotVersion;
+        err.ref = target.ref;
+        err.ref_generation = refGen;
+        err.current_generation = session.documentGeneration;
         throw err;
       }
+    }
+
+    let found = session.elementRefs.get(cleanRef);
+    if (!found && !cleanRef.includes(":")) {
+      found = session.elementRefs.get(`d${session.documentGeneration}:${cleanRef}`);
+    }
+
+    if (!found) {
+      const historical =
+        session.refHistory.get(cleanRef) ||
+        (!cleanRef.includes(":")
+          ? Array.from(session.refHistory.entries()).find(([k]) => k.endsWith(`:${cleanRef}`))?.[1]
+          : undefined);
+
       const err: any = new Error(
-        `STALE_ELEMENT_REFERENCE: Ref "${target.ref}" not found in current snapshot (v${session.currentSnapshotVersion}). The page DOM may have changed. Please take a new browser_snapshot.`
+        `STALE_ELEMENT_REFERENCE: Ref "${target.ref}" not found in current snapshot (v${session.currentSnapshotVersion}, gen ${session.documentGeneration}). The page DOM changed or element was navigated away. Please take a new browser_snapshot.`
       );
       err.code = "STALE_ELEMENT_REFERENCE";
+      err.ref = target.ref;
+      err.ref_generation = historical?.generation || (genMatch ? parseInt(genMatch[1], 10) : undefined);
+      err.current_generation = session.documentGeneration;
       throw err;
     }
     return found.selector;
@@ -1067,7 +1089,7 @@ export async function executeTraceStart(
 export async function executeTraceStop(
   session: BrowserSession,
   outputPath?: string
-): Promise<StandardToolResponse<{ tracePath: string; sizeBytes: number }>> {
+): Promise<StandardToolResponse<{ tracePath: string; sizeBytes: number; requested_path?: string; resolved_path?: string }>> {
   const startTime = Date.now();
   if (!session.isTracing) {
     return {
@@ -1086,15 +1108,45 @@ export async function executeTraceStop(
     };
   }
 
-  const targetPath = outputPath || path.join(os.tmpdir(), `verity_trace_${randomUUID().slice(0, 8)}.zip`);
+  const workspaceRoot = workspaceManager.getActiveWorkspaceRoot();
+  const requestedPath = outputPath || "(auto-generated artifact)";
+  const resolvedPath = outputPath
+    ? (path.isAbsolute(outputPath) ? path.resolve(outputPath) : path.resolve(workspaceRoot, outputPath))
+    : path.join(os.tmpdir(), `verity_trace_${randomUUID().slice(0, 8)}.zip`);
+
   try {
-    await session.context.tracing.stop({ path: targetPath });
+    await fs.mkdir(path.dirname(resolvedPath), { recursive: true });
+    await session.context.tracing.stop({ path: resolvedPath });
     session.isTracing = false;
-    const stat = await fs.stat(targetPath);
+
+    // Verify trace file exists on disk
+    const verifyRes = await verifyFileExistence(resolvedPath, true);
+    if (!verifyRes.passed) {
+      return {
+        success: false,
+        error_code: "TRACE_WRITE_FAILED",
+        action: "browser_trace_stop",
+        display_title: "Stopping browser trace",
+        display_status: "failed",
+        text: `Trace stop completed but archive file was not found at ${resolvedPath}.`,
+        summary: "Trace write failed",
+        verification: verifyRes,
+        durationMs: Date.now() - startTime,
+      };
+    }
+
+    const stat = await fs.stat(resolvedPath);
+    const withinWorkspace = resolvedPath.toLowerCase().startsWith(workspaceRoot.toLowerCase());
+
     return {
       success: true,
       action: "browser_trace_stop",
-      text: `Tracing stopped and saved to ${targetPath} (${stat.size} bytes).`,
+      display_title: "Stopping browser trace",
+      display_status: "verified",
+      within_workspace: withinWorkspace,
+      workspace_root: workspaceRoot,
+      resolved_path: resolvedPath,
+      text: `Tracing stopped and saved to ${resolvedPath} (${stat.size} bytes).`,
       summary: `Trace saved (${stat.size} bytes)`,
       execution_verification: { status: "passed", method: "tracing_stop" },
       state_verification: { status: "passed", method: "trace_archive_written", details: { sizeBytes: stat.size } },
@@ -1102,17 +1154,24 @@ export async function executeTraceStop(
         performed: true,
         passed: true,
         method: "fs_stat_exists",
-        details: { targetPath, sizeBytes: stat.size },
+        details: { targetPath: resolvedPath, sizeBytes: stat.size },
       },
-      data: { tracePath: targetPath, sizeBytes: stat.size },
+      data: {
+        requested_path: requestedPath,
+        resolved_path: resolvedPath,
+        tracePath: resolvedPath,
+        sizeBytes: stat.size,
+      },
       durationMs: Date.now() - startTime,
     };
   } catch (err: any) {
     session.isTracing = false;
     return {
       success: false,
-      error_code: "COMMAND_FAILED",
+      error_code: "TRACE_WRITE_FAILED",
       action: "browser_trace_stop",
+      display_title: "Stopping browser trace",
+      display_status: "failed",
       text: `Failed to stop tracing: ${err.message}`,
       summary: `Trace stop failed: ${err.message}`,
       verification: {

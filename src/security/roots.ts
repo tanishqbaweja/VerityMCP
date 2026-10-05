@@ -1,5 +1,18 @@
 import path from "node:path";
 
+export type WorkspaceAccessMode = "open" | "warn" | "restricted";
+
+let currentWorkspaceAccessMode: WorkspaceAccessMode =
+  (process.env.VERITY_WORKSPACE_ACCESS_MODE as WorkspaceAccessMode) || "warn";
+
+export function setWorkspaceAccessMode(mode: WorkspaceAccessMode): void {
+  currentWorkspaceAccessMode = mode;
+}
+
+export function getWorkspaceAccessMode(): WorkspaceAccessMode {
+  return currentWorkspaceAccessMode;
+}
+
 /**
  * Normalizes a path for consistent cross-platform containment comparison.
  */
@@ -45,26 +58,69 @@ export function assertPathWithinRoots(targetPath: string, allowedRoots: string[]
   return normTarget;
 }
 
+export interface PathResolution {
+  resolvedPath: string;
+  withinWorkspace: boolean;
+  workspaceRoot: string;
+  warning?: string;
+}
+
 /**
- * Resolves a path that may be relative to workspaceRoot and verifies containment.
+ * Resolves a path that may be relative to workspaceRoot or explicit absolute path.
+ * Supports open, warn, and restricted modes.
+ */
+export function resolvePathWithWorkspace(
+  workspaceRoot: string,
+  subPath: string,
+  allowedRoots: string[] = [],
+  explicitMode?: WorkspaceAccessMode
+): PathResolution {
+  const mode = explicitMode || getWorkspaceAccessMode();
+  const normWorkspaceRoot = normalizePath(workspaceRoot);
+  const isAbs = path.isAbsolute(subPath);
+
+  const resolved = isAbs
+    ? normalizePath(subPath)
+    : normalizePath(path.join(normWorkspaceRoot, subPath));
+
+  const withinWorkspace = isPathContained(resolved, normWorkspaceRoot);
+
+  if (mode === "restricted") {
+    if (!withinWorkspace) {
+      throw new Error(`Access denied: Path "${subPath}" escapes workspace root "${workspaceRoot}".`);
+    }
+    if (allowedRoots && allowedRoots.length > 0) {
+      assertPathWithinRoots(resolved, allowedRoots);
+    }
+    return {
+      resolvedPath: resolved,
+      withinWorkspace: true,
+      workspaceRoot: normWorkspaceRoot,
+    };
+  }
+
+  // In "open" or "warn" mode, external paths are allowed
+  let warning: string | undefined;
+  if (!withinWorkspace && mode === "warn") {
+    warning = `Target "${resolved}" is outside active workspace ("${normWorkspaceRoot}").`;
+  }
+
+  return {
+    resolvedPath: resolved,
+    withinWorkspace,
+    workspaceRoot: normWorkspaceRoot,
+    warning,
+  };
+}
+
+/**
+ * Backwards-compatible resolver for operations that only need the string path.
  */
 export function resolveWorkspacePath(
   workspaceRoot: string,
   subPath: string,
-  allowedRoots?: string[]
+  allowedRoots?: string[],
+  explicitMode?: WorkspaceAccessMode
 ): string {
-  const resolved = path.isAbsolute(subPath)
-    ? normalizePath(subPath)
-    : normalizePath(path.join(workspaceRoot, subPath));
-
-  // Contain within workspace root
-  if (!isPathContained(resolved, workspaceRoot)) {
-    throw new Error(`Path "${subPath}" escapes workspace root "${workspaceRoot}".`);
-  }
-
-  if (allowedRoots && allowedRoots.length > 0) {
-    assertPathWithinRoots(resolved, allowedRoots);
-  }
-
-  return resolved;
+  return resolvePathWithWorkspace(workspaceRoot, subPath, allowedRoots, explicitMode).resolvedPath;
 }

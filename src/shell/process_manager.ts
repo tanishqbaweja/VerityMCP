@@ -1,8 +1,25 @@
+import fs from "node:fs";
+import path from "node:path";
 import { spawn, type ChildProcess, execSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import type { ProcessSession, ProcessStatus, ShellType, StandardToolResponse } from "../types/index.js";
+import type {
+  ProcessSession,
+  ProcessStatus,
+  ShellType,
+  StandardToolResponse,
+  ExecutionVerification,
+  StateVerification,
+} from "../types/index.js";
+import { activityStream } from "../observability/activity_stream.js";
 import { resolveShellCommand, detectShells } from "./shell_detector.js";
 import { formatOutputWithBudget } from "./token_budget.js";
+
+export interface ExecVerifyOptions {
+  path_exists?: string;
+  path_absent?: string;
+  stdout_contains?: string;
+  exit_code?: number;
+}
 
 export interface ExecCommandOptions {
   command: string;
@@ -12,6 +29,7 @@ export interface ExecCommandOptions {
   yieldMs?: number;
   runInBackground?: boolean;
   maxOutputChars?: number;
+  verify?: ExecVerifyOptions;
 }
 
 export interface OutputChunk {
@@ -148,7 +166,19 @@ export class ProcessManager {
     }
 
     const session = this.createSession(command, cwd, requestedShell);
-    const fullArgs = [...shellResolved.argsPrefix, command];
+    let finalCommand = command;
+    if (session.shell === "powershell") {
+      finalCommand = `[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $OutputEncoding = [System.Text.Encoding]::UTF8; ${command}`;
+    }
+    const fullArgs = [...shellResolved.argsPrefix, finalCommand];
+
+    activityStream.emit({
+      type: "action_started",
+      title: `Executing ${session.shell}: ${command.slice(0, 60)}`,
+      purpose: "Run shell command and capture process output stream",
+      tool: "exec_command",
+      process_session_id: session.id,
+    });
 
     let child: ChildProcess;
     try {
@@ -277,18 +307,110 @@ export class ProcessManager {
       const formattedStdout = formatOutputWithBudget(stdoutRaw, maxOutputChars);
       const formattedStderr = formatOutputWithBudget(stderrRaw, maxOutputChars);
 
+      const stderrPresent = stderrRaw.trim().length > 0;
+      const warnings: string[] = [];
+      if (code === 0 && stderrPresent) {
+        warnings.push("Command emitted stderr despite exit code 0.");
+        activityStream.emit({
+          type: "warning",
+          title: "Command emitted stderr despite exit code 0",
+          tool: "exec_command",
+          process_session_id: session.id,
+          details: { stderrSnippet: stderrRaw.trim().slice(0, 200) },
+        });
+      }
+
+      // State verification: defaults to not_observable unless explicit postconditions are tested
+      let stateVerif: StateVerification = {
+        status: "not_observable",
+      };
+
+      if (options.verify) {
+        let verifyPassed = true;
+        const details: Record<string, unknown> = {};
+
+        if (options.verify.exit_code !== undefined) {
+          const match = code === options.verify.exit_code;
+          details.exit_code = { expected: options.verify.exit_code, actual: code, passed: match };
+          if (!match) verifyPassed = false;
+        }
+
+        if (options.verify.stdout_contains) {
+          const match = stdoutRaw.includes(options.verify.stdout_contains);
+          details.stdout_contains = { expected: options.verify.stdout_contains, passed: match };
+          if (!match) verifyPassed = false;
+        }
+
+        if (options.verify.path_exists) {
+          const target = path.isAbsolute(options.verify.path_exists)
+            ? options.verify.path_exists
+            : path.resolve(cwd, options.verify.path_exists);
+          let exists = false;
+          try {
+            fs.statSync(target);
+            exists = true;
+          } catch {}
+          details.path_exists = { path: target, passed: exists };
+          if (!exists) verifyPassed = false;
+        }
+
+        if (options.verify.path_absent) {
+          const target = path.isAbsolute(options.verify.path_absent)
+            ? options.verify.path_absent
+            : path.resolve(cwd, options.verify.path_absent);
+          let absent = false;
+          try {
+            fs.statSync(target);
+          } catch (e: any) {
+            if (e.code === "ENOENT") absent = true;
+          }
+          details.path_absent = { path: target, passed: absent };
+          if (!absent) verifyPassed = false;
+        }
+
+        stateVerif = {
+          status: verifyPassed ? "passed" : "failed",
+          method: "postcondition_check",
+          details,
+          error: verifyPassed ? undefined : "One or more postconditions failed",
+        };
+      }
+
+      const execVerif: ExecutionVerification = {
+        status: success ? "passed" : "failed",
+        method: "process_exit_code_check",
+        details: { exitCode: code, wallTimeMs },
+      };
+
+      activityStream.emit({
+        type: success ? "action_completed" : "failure",
+        title: `Process exit ${code} (${wallTimeMs}ms)`,
+        tool: "exec_command",
+        process_session_id: session.id,
+        details: { exitCode: code, wallTimeMs, stderrPresent },
+      });
+
       return {
         success,
+        error_code: success ? undefined : "COMMAND_FAILED",
         action: `exec_command "${command}"`,
+        display_title: `Running command: ${command.slice(0, 50)}`,
+        display_status: warnings.length > 0 && success ? "warning" : (success ? (options.verify && stateVerif.status === "passed" ? "verified" : "completed") : "failed"),
         text: `Process finished with exit code ${code} in ${wallTimeMs}ms`,
         stdout: formattedStdout.text,
         stderr: formattedStderr.text,
         exitCode: code,
+        stderr_present: stderrPresent,
+        warnings: warnings.length > 0 ? warnings : undefined,
+        execution_verification: execVerif,
+        state_verification: stateVerif,
         verification: {
           performed: true,
-          passed: success,
+          passed: success && (options.verify ? stateVerif.status === "passed" : true),
           method: "process_exit_code_check",
           details: { exitCode: code, wallTimeMs },
+          execution: execVerif,
+          state: stateVerif,
         },
         data: {
           sessionId: session.id,

@@ -2,7 +2,8 @@ import path from "node:path";
 import os from "node:os";
 import { randomUUID } from "node:crypto";
 import type { Workspace, StandardToolResponse, DetectedShells, SkillInfo } from "../types/index.js";
-import { assertPathWithinRoots, normalizePath } from "../security/roots.js";
+import { assertPathWithinRoots, normalizePath, getWorkspaceAccessMode } from "../security/roots.js";
+import { activityStream } from "../observability/activity_stream.js";
 import { generateRepoMap } from "./repo_map.js";
 import { loadInstructions } from "./instructions.js";
 import { discoverSkills } from "./skills.js";
@@ -35,26 +36,41 @@ export class WorkspaceManager {
   ): Promise<StandardToolResponse<OpenWorkspaceResult>> {
     const startTime = Date.now();
     const rawPath = targetPath ? path.resolve(targetPath) : process.cwd();
+    const mode = getWorkspaceAccessMode();
 
     let root: string;
-    try {
-      root = assertPathWithinRoots(rawPath, allowedRoots);
-    } catch (err: any) {
-      return {
-        success: false,
-        action: `open_workspace "${rawPath}"`,
-        text: `Security containment check failed: ${err.message}`,
-        verification: {
-          performed: true,
-          passed: false,
-          method: "path_containment_check",
-          error: err.message,
-        },
-        durationMs: Date.now() - startTime,
-      };
+    if (mode === "restricted" && allowedRoots.length > 0) {
+      try {
+        root = assertPathWithinRoots(rawPath, allowedRoots);
+      } catch (err: any) {
+        return {
+          success: false,
+          error_code: "SECURITY_VIOLATION",
+          action: `open_workspace "${rawPath}"`,
+          text: `Security containment check failed: ${err.message}`,
+          verification: {
+            performed: true,
+            passed: false,
+            method: "path_containment_check",
+            error: err.message,
+          },
+          durationMs: Date.now() - startTime,
+        };
+      }
+    } else {
+      root = normalizePath(rawPath);
     }
 
     const id = `ws_${randomUUID().slice(0, 8)}`;
+    activityStream.emit({
+      type: "action_started",
+      title: `Opening workspace: ${root}`,
+      purpose: "Initialize workspace execution context, repo map, git state, and skills",
+      tool: "open_workspace",
+      target: { root },
+      workspace_id: id,
+    });
+
     const [repoMap, instructions, skills, gitRes] = await Promise.all([
       generateRepoMap(root),
       loadInstructions(root),
@@ -112,9 +128,23 @@ export class WorkspaceManager {
       lines.push(`\nInstruction Context Loaded:\n${instructions.slice(0, 500)}...`);
     }
 
+    activityStream.emit({
+      type: "action_completed",
+      title: `Workspace active: ${path.basename(root)}`,
+      purpose: "Workspace initialized and ready for execution",
+      tool: "open_workspace",
+      workspace_id: id,
+      target: { root },
+    });
+
     return {
       success: true,
       action: `open_workspace "${root}"`,
+      display_title: `Opening workspace: ${path.basename(root)}`,
+      display_status: "verified",
+      within_workspace: true,
+      workspace_root: root,
+      resolved_path: root,
       text: lines.join("\n"),
       verification: {
         performed: true,
