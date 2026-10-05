@@ -16,6 +16,9 @@ export interface BrowserScreenshotOptions {
 export interface BrowserScreenshotData {
   requestedPath: string;
   resolvedPath: string;
+  requested_path?: string;
+  resolved_path?: string;
+  image_attached?: boolean;
   filePath: string;
   bytes: number;
   sha256: string;
@@ -195,6 +198,9 @@ export async function executeBrowserScreenshot(
   const data: BrowserScreenshotData = {
     requestedPath,
     resolvedPath,
+    requested_path: requestedPath,
+    resolved_path: resolvedPath,
+    image_attached: true,
     filePath: resolvedPath,
     bytes: diskBytes.length,
     sha256,
