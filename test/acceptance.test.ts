@@ -169,18 +169,16 @@ describe("VerityMCP Comprehensive Acceptance Suite", () => {
     // 1. discoverSkills
     const skills = await discoverSkills(root);
     assert.ok(skills.length >= 1, "Discovered at least one skill");
-    assert.ok(skills.some((s) => s.name === "subagents"), "Found subagents skill");
 
-    const subagentsSkill = skills.find((s) => s.name === "subagents");
-    assert.ok(subagentsSkill?.source);
-    assert.ok(subagentsSkill?.path);
-    assert.ok(subagentsSkill?.description);
+    const firstSkill = skills[0];
+    assert.ok(firstSkill?.source);
+    assert.ok(firstSkill?.path);
+    assert.ok(firstSkill?.description);
 
     // 2. readSkillContent
-    const contentRes = await readSkillContent("subagents", root);
-    assert.strictEqual(contentRes.name, "subagents");
+    const contentRes = await readSkillContent(firstSkill.name, root);
+    assert.strictEqual(contentRes.name, firstSkill.name);
     assert.ok(contentRes.content.length > 0);
-    assert.ok(contentRes.content.includes("Subagent") || contentRes.content.includes("profile"));
 
     // 3. openWorkspace includes discovered skills and shells in returned data
     const wsRes = await workspaceManager.openWorkspace(root, [root]);

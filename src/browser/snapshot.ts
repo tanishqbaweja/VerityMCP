@@ -53,12 +53,13 @@ const EVAL_SNAPSHOT_SCRIPT = `
     }
   }
 
+  const gen = args.documentGeneration || 1;
   // Calculate highest existing ref index to preserve stability across snapshots
   let maxRefNum = 0;
   const existingRefs = document.querySelectorAll('[data-verity-ref]');
   for (let i = 0; i < existingRefs.length; i++) {
     const val = existingRefs[i].getAttribute('data-verity-ref') || '';
-    const m = val.match(/^e(\\d+)$/);
+    const m = val.match(/e([0-9]+)$/);
     if (m) {
       const num = parseInt(m[1], 10);
       if (num > maxRefNum) maxRefNum = num;
@@ -67,11 +68,12 @@ const EVAL_SNAPSHOT_SCRIPT = `
 
   const getOrAssignRef = (el) => {
     let ref = el.getAttribute('data-verity-ref');
-    if (!ref) {
-      maxRefNum++;
-      ref = 'e' + maxRefNum;
-      el.setAttribute('data-verity-ref', ref);
+    if (ref && ref.startsWith('d' + gen + ':')) {
+      return ref;
     }
+    maxRefNum++;
+    ref = 'd' + gen + ':e' + maxRefNum;
+    el.setAttribute('data-verity-ref', ref);
     return ref;
   };
 
@@ -410,6 +412,7 @@ export async function takeBrowserSnapshot(
     rootRef: options.root_ref,
     rootSelector: options.selector,
     maxNodes: options.maxNodes || 500,
+    documentGeneration: session.documentGeneration,
   };
 
   const rawData: any = await page.evaluate(`(${EVAL_SNAPSHOT_SCRIPT})(${JSON.stringify(evalPayload)})`);
@@ -437,7 +440,7 @@ export async function takeBrowserSnapshot(
   const lines: string[] = [
     `Page: ${title || "(No Title)"}`,
     `URL: ${url}`,
-    `Snapshot Version: ${currentVersion}`,
+    `Snapshot Version: ${currentVersion} (Gen: ${session.documentGeneration})`,
     `\n${rawData.treeLines.join("\n")}`,
   ];
 
@@ -449,7 +452,20 @@ export async function takeBrowserSnapshot(
       text: el.text,
       isChecked: el.isChecked,
       version: currentVersion,
+      generation: session.documentGeneration,
     });
+    const bare = el.ref.replace(/^d\d+:/, "");
+    if (bare && !session.elementRefs.has(bare)) {
+      session.elementRefs.set(bare, {
+        selector: el.selector,
+        role: el.role || el.tagName,
+        name: el.name || el.text,
+        text: el.text,
+        isChecked: el.isChecked,
+        version: currentVersion,
+        generation: session.documentGeneration,
+      });
+    }
     snapshotElements.push(el);
   });
 
@@ -499,3 +515,5 @@ export async function takeBrowserSnapshot(
     durationMs: Date.now() - startTime,
   };
 }
+
+export const executeBrowserSnapshot = takeBrowserSnapshot;

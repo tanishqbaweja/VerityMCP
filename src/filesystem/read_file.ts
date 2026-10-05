@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { resolveWorkspacePath } from "../security/roots.js";
+import { resolvePathWithWorkspace } from "../security/roots.js";
+import { activityStream } from "../observability/activity_stream.js";
 import { calculateSha256 } from "../verification/index.js";
 import type { StandardToolResponse } from "../types/index.js";
 
@@ -47,13 +48,14 @@ export async function executeReadFile(
   const startTime = Date.now();
   const { workspaceRoot, allowedRoots = [], filePath, lineStart, lineEnd, withLineNumbers = true } = options;
 
-  let resolvedPath: string;
+  let pathRes;
   try {
-    resolvedPath = resolveWorkspacePath(workspaceRoot, filePath, allowedRoots);
+    pathRes = resolvePathWithWorkspace(workspaceRoot, filePath, allowedRoots);
   } catch (err: any) {
     return {
       toolResponse: {
         success: false,
+        error_code: "SECURITY_VIOLATION",
         action: `read_file "${filePath}"`,
         text: `Path validation failed: ${err.message}`,
         verification: {
@@ -67,6 +69,18 @@ export async function executeReadFile(
     };
   }
 
+  const resolvedPath = pathRes.resolvedPath;
+
+  if (!pathRes.withinWorkspace) {
+    activityStream.emit({
+      type: "warning",
+      title: `Reading outside active workspace: ${resolvedPath}`,
+      tool: "read_file",
+      target: { path: resolvedPath },
+      details: { workspaceRoot: pathRes.workspaceRoot },
+    });
+  }
+
   let stat;
   try {
     stat = await fs.stat(resolvedPath);
@@ -74,7 +88,13 @@ export async function executeReadFile(
     return {
       toolResponse: {
         success: false,
+        error_code: "FILE_NOT_FOUND",
         action: `read_file "${filePath}"`,
+        display_title: `Reading file: ${path.basename(filePath)}`,
+        display_status: "failed",
+        within_workspace: pathRes.withinWorkspace,
+        workspace_root: pathRes.workspaceRoot,
+        resolved_path: resolvedPath,
         text: `File not found: "${filePath}" (${err.message})`,
         verification: {
           performed: true,
@@ -126,6 +146,12 @@ export async function executeReadFile(
       toolResponse: {
         success: true,
         action: `read_file (image) "${filePath}"`,
+        display_title: `Reading image: ${path.basename(filePath)}`,
+        display_status: "verified",
+        within_workspace: pathRes.withinWorkspace,
+        workspace_root: pathRes.workspaceRoot,
+        resolved_path: resolvedPath,
+        warning: pathRes.warning,
         text: `Image file loaded: ${filePath} (${mimeType}, ${buffer.length} bytes, SHA-256: ${sha256.slice(0, 16)}...)`,
         verification: {
           performed: true,
@@ -225,6 +251,12 @@ export async function executeReadFile(
       toolResponse: {
         success: true,
         action: `read_file "${filePath}" [${start}-${end}]`,
+        display_title: `Reading ${path.basename(filePath)}`,
+        display_status: "verified",
+        within_workspace: pathRes.withinWorkspace,
+        workspace_root: pathRes.workspaceRoot,
+        resolved_path: resolvedPath,
+        warning: pathRes.warning,
         text: fullText,
         verification: {
           performed: true,

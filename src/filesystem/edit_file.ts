@@ -1,7 +1,9 @@
 import fs from "node:fs/promises";
+import path from "node:path";
 import crypto from "node:crypto";
 import * as diff from "diff";
-import { resolveWorkspacePath } from "../security/roots.js";
+import { resolvePathWithWorkspace } from "../security/roots.js";
+import { activityStream } from "../observability/activity_stream.js";
 import { verifyFileContent } from "../verification/index.js";
 import type { StandardToolResponse } from "../types/index.js";
 
@@ -44,12 +46,13 @@ export async function executeEditFile(
     replaceAll = false,
   } = options;
 
-  let resolvedPath: string;
+  let pathRes;
   try {
-    resolvedPath = resolveWorkspacePath(workspaceRoot, filePath, allowedRoots);
+    pathRes = resolvePathWithWorkspace(workspaceRoot, filePath, allowedRoots);
   } catch (err: any) {
     return {
       success: false,
+      error_code: "SECURITY_VIOLATION",
       action: `edit_file "${filePath}"`,
       text: `Path validation failed: ${err.message}`,
       verification: {
@@ -61,6 +64,17 @@ export async function executeEditFile(
       durationMs: Date.now() - startTime,
     };
   }
+
+  const resolvedPath = pathRes.resolvedPath;
+
+  activityStream.emit({
+    type: "action_started",
+    title: `Editing ${path.basename(filePath)}`,
+    purpose: "Apply exact text replacement and verify disk readback SHA-256",
+    tool: "edit_file",
+    target: { path: resolvedPath },
+    details: { replaceAll, withinWorkspace: pathRes.withinWorkspace },
+  });
 
   if (oldString === newString) {
     return {
@@ -221,9 +235,29 @@ export async function executeEditFile(
   const additions = diffLines.filter((l) => l.startsWith("+") && !l.startsWith("+++")).length;
   const removals = diffLines.filter((l) => l.startsWith("-") && !l.startsWith("---")).length;
 
+  activityStream.emit({
+    type: "verification",
+    title: "Disk write & SHA-256 verified",
+    tool: "edit_file",
+    evidence: { sha256 },
+  });
+
+  activityStream.emit({
+    type: "action_completed",
+    title: `${path.basename(filePath)} updated successfully`,
+    tool: "edit_file",
+    target: { path: resolvedPath },
+  });
+
   return {
     success: true,
     action: `edit_file "${filePath}" (${replacements} replacement${replacements > 1 ? "s" : ""})`,
+    display_title: `Editing ${path.basename(filePath)}`,
+    display_status: "verified",
+    within_workspace: pathRes.withinWorkspace,
+    workspace_root: pathRes.workspaceRoot,
+    resolved_path: resolvedPath,
+    warning: pathRes.warning,
     text: `Successfully edited "${filePath}" (${replacements} replacement${replacements > 1 ? "s" : ""}).\n\n${diffPatch}`,
     verification,
     data: {

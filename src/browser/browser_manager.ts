@@ -21,8 +21,9 @@ export interface BrowserSession {
   pages: Page[];
   activePageIndex: number;
   currentSnapshotVersion: number;
-  elementRefs: Map<string, { selector: string; role?: string; name?: string; text?: string; isChecked?: boolean; version?: number }>;
-  refHistory: Map<string, { selector: string; role?: string; name?: string; version: number }>;
+  documentGeneration: number;
+  elementRefs: Map<string, { selector: string; role?: string; name?: string; text?: string; isChecked?: boolean; version?: number; generation?: number }>;
+  refHistory: Map<string, { selector: string; role?: string; name?: string; version: number; generation?: number }>;
   consoleLogs: ConsoleLogEntry[];
   networkEvents: NetworkEventEntry[];
   isTracing?: boolean;
@@ -48,6 +49,20 @@ export class BrowserManager {
   }
 
   private wirePageListeners(page: Page, session: BrowserSession) {
+    page.on("framenavigated", (frame) => {
+      if (frame === page.mainFrame()) {
+        session.documentGeneration++;
+        for (const [ref, info] of session.elementRefs.entries()) {
+          session.refHistory.set(ref, {
+            ...info,
+            generation: info.generation ?? (session.documentGeneration - 1),
+            version: info.version ?? session.currentSnapshotVersion,
+          });
+        }
+        session.elementRefs.clear();
+      }
+    });
+
     page.on("console", (msg) => {
       session.consoleLogs.push({
         type: msg.type(),
@@ -106,6 +121,7 @@ export class BrowserManager {
       pages: [page],
       activePageIndex: 0,
       currentSnapshotVersion: 0,
+      documentGeneration: 1,
       elementRefs: new Map(),
       refHistory: new Map(),
       consoleLogs: [],
@@ -132,6 +148,15 @@ export class BrowserManager {
     this.wirePageListeners(newPage, session);
     session.pages.push(newPage);
     session.activePageIndex = session.pages.length - 1;
+    session.documentGeneration++;
+    for (const [ref, info] of session.elementRefs.entries()) {
+      session.refHistory.set(ref, {
+        ...info,
+        generation: info.generation ?? (session.documentGeneration - 1),
+        version: info.version ?? session.currentSnapshotVersion,
+      });
+    }
+    session.elementRefs.clear();
 
     if (url) {
       await newPage.goto(url, { waitUntil: "domcontentloaded" });
@@ -141,6 +166,17 @@ export class BrowserManager {
 
   public selectTab(session: BrowserSession, index: number): boolean {
     if (index >= 0 && index < session.pages.length && !session.pages[index].isClosed()) {
+      if (session.activePageIndex !== index) {
+        session.documentGeneration++;
+        for (const [ref, info] of session.elementRefs.entries()) {
+          session.refHistory.set(ref, {
+            ...info,
+            generation: info.generation ?? (session.documentGeneration - 1),
+            version: info.version ?? session.currentSnapshotVersion,
+          });
+        }
+        session.elementRefs.clear();
+      }
       session.activePageIndex = index;
       return true;
     }

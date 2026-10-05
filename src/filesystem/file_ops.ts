@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { resolveWorkspacePath } from "../security/roots.js";
+import { resolvePathWithWorkspace } from "../security/roots.js";
+import { activityStream } from "../observability/activity_stream.js";
 import {
   verifyFileExistence,
   verifyFileRelocation,
@@ -21,12 +22,13 @@ export async function executeDeleteFile(
   const startTime = Date.now();
   const { workspaceRoot, allowedRoots = [], filePath, recursive = false } = options;
 
-  let resolvedPath: string;
+  let pathRes;
   try {
-    resolvedPath = resolveWorkspacePath(workspaceRoot, filePath, allowedRoots);
+    pathRes = resolvePathWithWorkspace(workspaceRoot, filePath, allowedRoots);
   } catch (err: any) {
     return {
       success: false,
+      error_code: "SECURITY_VIOLATION",
       action: `delete_file "${filePath}"`,
       text: `Path validation failed: ${err.message}`,
       verification: {
@@ -39,6 +41,17 @@ export async function executeDeleteFile(
     };
   }
 
+  const resolvedPath = pathRes.resolvedPath;
+
+  activityStream.emit({
+    type: "action_started",
+    title: `Deleting ${path.basename(filePath)}`,
+    purpose: "Unlink target path and verify absence from disk",
+    tool: "delete_file",
+    target: { path: resolvedPath },
+    details: { recursive, withinWorkspace: pathRes.withinWorkspace },
+  });
+
   let stat;
   try {
     stat = await fs.stat(resolvedPath);
@@ -46,7 +59,13 @@ export async function executeDeleteFile(
     if (err.code === "ENOENT") {
       return {
         success: false,
+        error_code: "FILE_NOT_FOUND",
         action: `delete_file "${filePath}"`,
+        display_title: `Deleting ${path.basename(filePath)}`,
+        display_status: "failed",
+        within_workspace: pathRes.withinWorkspace,
+        workspace_root: pathRes.workspaceRoot,
+        resolved_path: resolvedPath,
         text: `Cannot delete "${filePath}": File does not exist.`,
         verification: {
           performed: true,
@@ -59,7 +78,13 @@ export async function executeDeleteFile(
     }
     return {
       success: false,
+      error_code: "COMMAND_FAILED",
       action: `delete_file "${filePath}"`,
+      display_title: `Deleting ${path.basename(filePath)}`,
+      display_status: "failed",
+      within_workspace: pathRes.withinWorkspace,
+      workspace_root: pathRes.workspaceRoot,
+      resolved_path: resolvedPath,
       text: `Error inspecting path "${filePath}": ${err.message}`,
       verification: {
         performed: true,
@@ -76,13 +101,19 @@ export async function executeDeleteFile(
       if (!recursive) {
         return {
           success: false,
+          error_code: "INVALID_ARGUMENT",
           action: `delete_file "${filePath}"`,
+          display_title: `Deleting ${path.basename(filePath)}`,
+          display_status: "failed",
+          within_workspace: pathRes.withinWorkspace,
+          workspace_root: pathRes.workspaceRoot,
+          resolved_path: resolvedPath,
           text: `"${filePath}" is a directory. Set recursive: true to delete directory trees.`,
           verification: {
             performed: true,
             passed: false,
-            method: "directory_guard",
-            error: "Path is directory, recursive not specified",
+            method: "is_directory_check",
+            error: "Path is a directory, recursive flag not set",
           },
           durationMs: Date.now() - startTime,
         };
@@ -94,36 +125,61 @@ export async function executeDeleteFile(
   } catch (err: any) {
     return {
       success: false,
+      error_code: "COMMAND_FAILED",
       action: `delete_file "${filePath}"`,
-      text: `Failed to remove "${filePath}": ${err.message}`,
+      display_title: `Deleting ${path.basename(filePath)}`,
+      display_status: "failed",
+      within_workspace: pathRes.withinWorkspace,
+      workspace_root: pathRes.workspaceRoot,
+      resolved_path: resolvedPath,
+      text: `Failed to delete "${filePath}": ${err.message}`,
       verification: {
         performed: true,
         passed: false,
-        method: "fs_remove",
+        method: "fs_unlink_or_rm",
         error: err.message,
       },
       durationMs: Date.now() - startTime,
     };
   }
 
-  // MANDATORY POST-DELETE VERIFICATION
-  const verification = await verifyFileExistence(resolvedPath, false);
+  // MANDATORY POST-DELETION VERIFICATION
+  const verifyRes = await verifyFileExistence(resolvedPath, false);
 
-  if (!verification.passed) {
+  if (!verifyRes.passed) {
     return {
       success: false,
+      error_code: "COMMAND_FAILED",
       action: `delete_file "${filePath}"`,
-      text: `CRITICAL: Delete operation completed but file "${filePath}" still exists on disk!`,
-      verification,
+      display_title: `Deleting ${path.basename(filePath)}`,
+      display_status: "failed",
+      within_workspace: pathRes.withinWorkspace,
+      workspace_root: pathRes.workspaceRoot,
+      resolved_path: resolvedPath,
+      text: `CRITICAL: Deletion of "${filePath}" failed verification! Path still exists on disk.`,
+      verification: verifyRes,
       durationMs: Date.now() - startTime,
     };
   }
 
+  activityStream.emit({
+    type: "action_completed",
+    title: `Deleted ${path.basename(filePath)}`,
+    tool: "delete_file",
+    target: { path: resolvedPath },
+  });
+
   return {
     success: true,
     action: `delete_file "${filePath}"`,
+    display_title: `Deleting ${path.basename(filePath)}`,
+    display_status: "verified",
+    within_workspace: pathRes.withinWorkspace,
+    workspace_root: pathRes.workspaceRoot,
+    resolved_path: resolvedPath,
+    warning: pathRes.warning,
     text: `Successfully deleted "${filePath}". Verification confirmed file is unlinked.`,
-    verification,
+    verification: verifyRes,
     data: { filePath },
     durationMs: Date.now() - startTime,
   };
@@ -143,15 +199,15 @@ export async function executeMoveFile(
   const startTime = Date.now();
   const { workspaceRoot, allowedRoots = [], sourcePath, destinationPath, overwrite = false } = options;
 
-  let resolvedSource: string;
-  let resolvedDest: string;
-
+  let srcRes;
+  let dstRes;
   try {
-    resolvedSource = resolveWorkspacePath(workspaceRoot, sourcePath, allowedRoots);
-    resolvedDest = resolveWorkspacePath(workspaceRoot, destinationPath, allowedRoots);
+    srcRes = resolvePathWithWorkspace(workspaceRoot, sourcePath, allowedRoots);
+    dstRes = resolvePathWithWorkspace(workspaceRoot, destinationPath, allowedRoots);
   } catch (err: any) {
     return {
       success: false,
+      error_code: "SECURITY_VIOLATION",
       action: `move_file "${sourcePath}" -> "${destinationPath}"`,
       text: `Path validation failed: ${err.message}`,
       verification: {
@@ -164,12 +220,28 @@ export async function executeMoveFile(
     };
   }
 
+  const resolvedSource = srcRes.resolvedPath;
+  const resolvedDest = dstRes.resolvedPath;
+
+  activityStream.emit({
+    type: "action_started",
+    title: `Moving ${path.basename(sourcePath)} -> ${path.basename(destinationPath)}`,
+    tool: "move_file",
+    target: { source: resolvedSource, destination: resolvedDest },
+  });
+
   try {
     await fs.stat(resolvedSource);
   } catch (err: any) {
     return {
       success: false,
+      error_code: "FILE_NOT_FOUND",
       action: `move_file "${sourcePath}" -> "${destinationPath}"`,
+      display_title: `Moving ${path.basename(sourcePath)}`,
+      display_status: "failed",
+      within_workspace: srcRes.withinWorkspace && dstRes.withinWorkspace,
+      workspace_root: srcRes.workspaceRoot,
+      resolved_path: resolvedDest,
       text: `Source path "${sourcePath}" does not exist: ${err.message}`,
       verification: {
         performed: true,
@@ -182,11 +254,17 @@ export async function executeMoveFile(
   }
 
   try {
-    const destStat = await fs.stat(resolvedDest);
+    await fs.stat(resolvedDest);
     if (!overwrite) {
       return {
         success: false,
+        error_code: "INVALID_ARGUMENT",
         action: `move_file "${sourcePath}" -> "${destinationPath}"`,
+        display_title: `Moving ${path.basename(sourcePath)}`,
+        display_status: "failed",
+        within_workspace: srcRes.withinWorkspace && dstRes.withinWorkspace,
+        workspace_root: srcRes.workspaceRoot,
+        resolved_path: resolvedDest,
         text: `Destination "${destinationPath}" already exists and overwrite is false.`,
         verification: {
           performed: true,
@@ -201,7 +279,13 @@ export async function executeMoveFile(
     if (err.code !== "ENOENT") {
       return {
         success: false,
+        error_code: "COMMAND_FAILED",
         action: `move_file "${sourcePath}" -> "${destinationPath}"`,
+        display_title: `Moving ${path.basename(sourcePath)}`,
+        display_status: "failed",
+        within_workspace: srcRes.withinWorkspace && dstRes.withinWorkspace,
+        workspace_root: srcRes.workspaceRoot,
+        resolved_path: resolvedDest,
         text: `Failed to inspect destination path: ${err.message}`,
         verification: {
           performed: true,
@@ -214,14 +298,19 @@ export async function executeMoveFile(
     }
   }
 
-  // Ensure destination directory exists
   try {
     await fs.mkdir(path.dirname(resolvedDest), { recursive: true });
     await fs.rename(resolvedSource, resolvedDest);
   } catch (err: any) {
     return {
       success: false,
+      error_code: "COMMAND_FAILED",
       action: `move_file "${sourcePath}" -> "${destinationPath}"`,
+      display_title: `Moving ${path.basename(sourcePath)}`,
+      display_status: "failed",
+      within_workspace: srcRes.withinWorkspace && dstRes.withinWorkspace,
+      workspace_root: srcRes.workspaceRoot,
+      resolved_path: resolvedDest,
       text: `Failed to rename/move file: ${err.message}`,
       verification: {
         performed: true,
@@ -239,16 +328,35 @@ export async function executeMoveFile(
   if (!verification.passed) {
     return {
       success: false,
+      error_code: "COMMAND_FAILED",
       action: `move_file "${sourcePath}" -> "${destinationPath}"`,
+      display_title: `Moving ${path.basename(sourcePath)}`,
+      display_status: "failed",
+      within_workspace: srcRes.withinWorkspace && dstRes.withinWorkspace,
+      workspace_root: srcRes.workspaceRoot,
+      resolved_path: resolvedDest,
       text: `Move failed verification: ${verification.error}`,
       verification,
       durationMs: Date.now() - startTime,
     };
   }
 
+  activityStream.emit({
+    type: "action_completed",
+    title: `Moved ${path.basename(sourcePath)} to ${path.basename(destinationPath)}`,
+    tool: "move_file",
+    target: { destination: resolvedDest },
+  });
+
   return {
     success: true,
     action: `move_file "${sourcePath}" -> "${destinationPath}"`,
+    display_title: `Moving ${path.basename(sourcePath)}`,
+    display_status: "verified",
+    within_workspace: srcRes.withinWorkspace && dstRes.withinWorkspace,
+    workspace_root: srcRes.workspaceRoot,
+    resolved_path: resolvedDest,
+    warning: srcRes.warning || dstRes.warning,
     text: `Successfully moved "${sourcePath}" to "${destinationPath}". Relocation verified.`,
     verification,
     data: { sourcePath, destinationPath },
@@ -270,15 +378,15 @@ export async function executeCopyFile(
   const startTime = Date.now();
   const { workspaceRoot, allowedRoots = [], sourcePath, destinationPath, overwrite = true } = options;
 
-  let resolvedSource: string;
-  let resolvedDest: string;
-
+  let srcRes;
+  let dstRes;
   try {
-    resolvedSource = resolveWorkspacePath(workspaceRoot, sourcePath, allowedRoots);
-    resolvedDest = resolveWorkspacePath(workspaceRoot, destinationPath, allowedRoots);
+    srcRes = resolvePathWithWorkspace(workspaceRoot, sourcePath, allowedRoots);
+    dstRes = resolvePathWithWorkspace(workspaceRoot, destinationPath, allowedRoots);
   } catch (err: any) {
     return {
       success: false,
+      error_code: "SECURITY_VIOLATION",
       action: `copy_file "${sourcePath}" -> "${destinationPath}"`,
       text: `Path validation failed: ${err.message}`,
       verification: {
@@ -291,13 +399,29 @@ export async function executeCopyFile(
     };
   }
 
+  const resolvedSource = srcRes.resolvedPath;
+  const resolvedDest = dstRes.resolvedPath;
+
+  activityStream.emit({
+    type: "action_started",
+    title: `Copying ${path.basename(sourcePath)} -> ${path.basename(destinationPath)}`,
+    tool: "copy_file",
+    target: { source: resolvedSource, destination: resolvedDest },
+  });
+
   let srcContent: string;
   try {
     srcContent = await fs.readFile(resolvedSource, "utf-8");
   } catch (err: any) {
     return {
       success: false,
+      error_code: "FILE_NOT_FOUND",
       action: `copy_file "${sourcePath}" -> "${destinationPath}"`,
+      display_title: `Copying ${path.basename(sourcePath)}`,
+      display_status: "failed",
+      within_workspace: srcRes.withinWorkspace && dstRes.withinWorkspace,
+      workspace_root: srcRes.workspaceRoot,
+      resolved_path: resolvedDest,
       text: `Cannot read source file "${sourcePath}": ${err.message}`,
       verification: {
         performed: true,
@@ -319,7 +443,13 @@ export async function executeCopyFile(
   } catch (err: any) {
     return {
       success: false,
+      error_code: "COMMAND_FAILED",
       action: `copy_file "${sourcePath}" -> "${destinationPath}"`,
+      display_title: `Copying ${path.basename(sourcePath)}`,
+      display_status: "failed",
+      within_workspace: srcRes.withinWorkspace && dstRes.withinWorkspace,
+      workspace_root: srcRes.workspaceRoot,
+      resolved_path: resolvedDest,
       text: `Failed to copy file: ${err.message}`,
       verification: {
         performed: true,
@@ -337,7 +467,13 @@ export async function executeCopyFile(
   if (!verification.passed) {
     return {
       success: false,
+      error_code: "COMMAND_FAILED",
       action: `copy_file "${sourcePath}" -> "${destinationPath}"`,
+      display_title: `Copying ${path.basename(sourcePath)}`,
+      display_status: "failed",
+      within_workspace: srcRes.withinWorkspace && dstRes.withinWorkspace,
+      workspace_root: srcRes.workspaceRoot,
+      resolved_path: resolvedDest,
       text: `Copy failed verification: destination content does not match source. ${verification.error}`,
       verification,
       durationMs: Date.now() - startTime,
@@ -346,9 +482,22 @@ export async function executeCopyFile(
 
   const bytesCopied = Buffer.byteLength(srcContent, "utf-8");
 
+  activityStream.emit({
+    type: "action_completed",
+    title: `Copied ${bytesCopied} bytes to ${path.basename(destinationPath)}`,
+    tool: "copy_file",
+    target: { destination: resolvedDest },
+  });
+
   return {
     success: true,
     action: `copy_file "${sourcePath}" -> "${destinationPath}"`,
+    display_title: `Copying ${path.basename(sourcePath)}`,
+    display_status: "verified",
+    within_workspace: srcRes.withinWorkspace && dstRes.withinWorkspace,
+    workspace_root: srcRes.workspaceRoot,
+    resolved_path: resolvedDest,
+    warning: srcRes.warning || dstRes.warning,
     text: `Successfully copied ${bytesCopied} bytes from "${sourcePath}" to "${destinationPath}". Verification passed.`,
     verification,
     data: { sourcePath, destinationPath, bytesCopied },

@@ -7,6 +7,7 @@ export type McpContentItem =
 export interface McpToolResponse {
   content: McpContentItem[];
   isError?: boolean;
+  _structured?: any;
 }
 
 export function formatMcpResponse<T = unknown>(
@@ -66,13 +67,38 @@ export function formatMcpResponse<T = unknown>(
     lines.push(`\n--- STDERR ---\n${res.stderr}`);
   }
 
+  // Call ID & Display status
+  const callId = res.call_id || `call_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+  const displayTitle = res.display_title || res.action;
+  const displayStatus =
+    res.display_status ||
+    (res.success
+      ? (res.verification?.passed || execVerification?.status === "passed") ? "verified" : "completed"
+      : "failed");
+
+  // Warnings
+  const warnings: string[] = [];
+  if (res.warning) warnings.push(res.warning);
+  if (res.warnings) warnings.push(...res.warnings);
+  if (res.stderr_present && res.success && res.stderr?.trim()) {
+    warnings.push("Command emitted stderr despite exit code 0.");
+  }
+
   // Machine-readable structured payload for autonomous agents
   const structuredPayload = {
+    call_id: callId,
+    display_title: displayTitle,
+    display_status: warnings.length > 0 && res.success ? "warning" : displayStatus,
     success: res.success,
     action: res.action,
     summary: res.summary || res.text?.split("\n")[0] || res.action,
     ...(res.error_code ? { error_code: res.error_code } : {}),
     ...(res.data !== undefined ? { data: res.data } : {}),
+    ...(res.within_workspace !== undefined ? { within_workspace: res.within_workspace } : {}),
+    ...(res.workspace_root ? { workspace_root: res.workspace_root } : {}),
+    ...(res.resolved_path ? { resolved_path: res.resolved_path } : {}),
+    ...(warnings.length > 0 ? { warnings } : {}),
+    ...(res.stderr_present !== undefined ? { stderr_present: res.stderr_present } : {}),
     execution_verification: execVerification || {
       status: res.success ? "passed" : "failed",
       method: res.verification?.method || "action_runner",
@@ -84,6 +110,10 @@ export function formatMcpResponse<T = unknown>(
     ...(res.durationMs !== undefined ? { duration_ms: res.durationMs } : {}),
     ...(res.exitCode !== undefined && res.exitCode !== null ? { exit_code: res.exitCode } : {}),
   };
+
+  if (warnings.length > 0) {
+    lines.push(`\n[Warnings: ${warnings.join("; ")}]`);
+  }
 
   lines.push(`\n--- STRUCTURED_PAYLOAD_JSON ---\n${JSON.stringify(structuredPayload, null, 2)}`);
 
@@ -105,5 +135,6 @@ export function formatMcpResponse<T = unknown>(
     content,
     // Keep isError false for operational failures so agent can inspect stdout/stderr/exitCode
     isError: options?.isError ?? false,
+    _structured: structuredPayload,
   };
 }
