@@ -170,6 +170,8 @@ DURABLE EXECUTION & RECOVERY INSTRUCTIONS:
     "list_runs",
     "get_run",
     "run_activity_read",
+    "find_runs",
+    "adopt_run",
   ]);
 
   function formatToolDisplayTitle(toolName: string, args: any): string {
@@ -262,6 +264,10 @@ DURABLE EXECUTION & RECOVERY INSTRUCTIONS:
         return `Retrieving run: ${args?.run_id || ""}`;
       case "run_activity_read":
         return `Reading activity journal for run: ${args?.run_id || "active"}`;
+      case "find_runs":
+        return `Finding runs matching "${args?.query || ""}"`;
+      case "adopt_run":
+        return `Adopting run: ${args?.run_id || ""}`;
       default:
         return toolName.replace(/_/g, " ");
     }
@@ -347,6 +353,10 @@ DURABLE EXECUTION & RECOVERY INSTRUCTIONS:
         return `Read complete execution state, checkpoints, and event history`;
       case "run_activity_read":
         return `Read paginated activity events from run's disk journal`;
+      case "find_runs":
+        return `Search prior runs across conversations using multi-signal contextual ranking`;
+      case "adopt_run":
+        return `Adopt a historical or interrupted run into the active session`;
       default:
         return `Execute ${toolName} operation`;
     }
@@ -703,18 +713,20 @@ DURABLE EXECUTION & RECOVERY INSTRUCTIONS:
     "Lists directory contents with depth, size, and ignore filtering.",
     {
       dir_path: z.string().optional().describe("Directory path. Defaults to root."),
+      path: z.string().optional().describe("Alias for dir_path."),
       recursive: z.boolean().optional().describe("Recursive scan. Defaults to false."),
       max_depth: z.number().int().positive().optional().describe("Max recursion depth. Defaults to 2."),
       show_hidden: z.boolean().optional().describe("Include hidden files. Defaults to false."),
     },
-    async ({ dir_path, recursive, max_depth, show_hidden }) => {
+    async (args) => {
+      const targetPath = args.dir_path || args.path;
       const res = await executeListDirectory({
         workspaceRoot: getRoot(),
         allowedRoots: config.allowedRoots,
-        dirPath: dir_path,
-        recursive: recursive ?? false,
-        maxDepth: max_depth ?? 2,
-        showHidden: show_hidden ?? false,
+        dirPath: targetPath,
+        recursive: args.recursive ?? false,
+        maxDepth: args.max_depth ?? 2,
+        showHidden: args.show_hidden ?? false,
       });
       return formatMcpResponse(res);
     }
@@ -1937,11 +1949,16 @@ DURABLE EXECUTION & RECOVERY INSTRUCTIONS:
   // 70. start_run
   registerTool(
     "start_run",
-    "Starts a durable autonomous run with goal, optional workspace, purpose, and phases. Returns run_id, persistent storage path, and embedded Live Activity Monitor UI.",
+    "Starts a durable autonomous run with goal, optional workspace, purpose, project_key, task_key, and phases. Returns run_id, persistent storage path, and embedded Live Activity Monitor UI.",
     {
       goal: z.string().describe("Autonomous goal or high-level mission to execute."),
       workspace: z.string().optional().describe("Workspace root directory path. Defaults to current active workspace."),
       purpose: z.string().optional().describe("Initial operational reason/intent."),
+      project_key: z.string().optional().describe("Durable project identifier (e.g. 'trebell-code')."),
+      task_key: z.string().optional().describe("Durable task identifier (e.g. 'native-harness-benchmark')."),
+      tags: z.array(z.string()).optional().describe("Tags categorizing the run."),
+      idempotency_key: z.string().optional().describe("Client idempotency key to prevent duplicate runs from rapid replays."),
+      conversation_id: z.string().optional().describe("Originating ChatGPT conversation ID for cross-chat tracking."),
       phases: z
         .array(
           z.object({
@@ -1953,12 +1970,17 @@ DURABLE EXECUTION & RECOVERY INSTRUCTIONS:
         .optional()
         .describe("Execution phases for tracking progress."),
     },
-    async ({ goal, workspace, purpose, phases }) => {
+    async ({ goal, workspace, purpose, project_key, task_key, tags, idempotency_key, conversation_id, phases }) => {
       const targetWs = workspace || workspaceManager.getActiveWorkspaceRoot() || process.cwd();
       const res = await runManager.startRun({
         goal,
         workspace: targetWs,
         purpose,
+        project_key,
+        task_key,
+        tags,
+        idempotency_key,
+        conversation_id,
         phases: phases as any,
       });
 
@@ -1969,6 +1991,8 @@ DURABLE EXECUTION & RECOVERY INSTRUCTIONS:
           display_title: `Run started: ${res.run.run_id}`,
           text: [
             `Started VerityMCP Run: ${res.run.run_id}`,
+            `Project Key: ${res.run.project_key || "none"}`,
+            `Task Key: ${res.run.task_key || "none"}`,
             `Goal: ${res.run.original_goal}`,
             `Workspace: ${res.run.workspace}`,
             `Persistent Storage: ${res.storage_path}`,
@@ -1976,9 +2000,12 @@ DURABLE EXECUTION & RECOVERY INSTRUCTIONS:
             `Live Monitor: ${res.monitor_url}`,
             `MCP App UI Resource: ${res.ui_resource_uri}`,
           ].join("\n"),
-          summary: `Started durable run ${res.run.run_id}`,
+          summary: `Started durable run ${res.run.run_id} [${res.run.task_key || "task"}]`,
           data: {
             run_id: res.run.run_id,
+            project_key: res.run.project_key,
+            task_key: res.run.task_key,
+            tags: res.run.tags,
             goal: res.run.original_goal,
             status: res.run.status,
             workspace: res.run.workspace,
@@ -2106,9 +2133,23 @@ DURABLE EXECUTION & RECOVERY INSTRUCTIONS:
       run_id: z.string().optional().describe("Run ID to complete. Defaults to active run."),
       status: z.enum(["completed", "failed", "abandoned"]).optional().describe("Final run status. Defaults to 'completed'."),
       notes: z.string().optional().describe("Final completion notes or verification findings."),
+      resolve_pending: z.boolean().optional().describe("If true, automatically marks remaining pending steps as resolved so run can complete."),
     },
-    async ({ run_id, status, notes }) => {
-      const res = await runManager.completeRun(run_id, { status, notes });
+    async ({ run_id, status, notes, resolve_pending }) => {
+      const res = await runManager.completeRun(run_id, { status, notes, resolve_pending });
+      if (res.error_code === "RUN_HAS_PENDING_STEPS") {
+        return formatMcpResponse({
+          success: false,
+          action: `complete_run "${res.run.run_id}"`,
+          display_title: `Run completion blocked: ${res.run.run_id}`,
+          text: res.cleanup_warnings.join("\n"),
+          summary: `Run completion blocked: pending steps remain`,
+          data: res,
+          error_code: "RUN_HAS_PENDING_STEPS",
+          warnings: res.cleanup_warnings,
+          verification: { performed: true, passed: false, method: "run_completion_audit" },
+        });
+      }
       return formatMcpResponse({
         success: true,
         action: `complete_run "${res.run.run_id}"`,
@@ -2198,6 +2239,95 @@ DURABLE EXECUTION & RECOVERY INSTRUCTIONS:
         summary: `Retrieved ${res.events.length} event(s) from run journal`,
         data: res,
         verification: { performed: true, passed: true, method: "run_events_journal_read" },
+      });
+    }
+  );
+
+  // 77. find_runs
+  registerTool(
+    "find_runs",
+    "Finds and contextually ranks existing durable runs across conversations using multi-signal scoring (project key, task key, goal fingerprint, modified files, recency). Flags ambiguous matches to prevent guessing.",
+    {
+      query: z.string().optional().describe("Search query, goal description, or task keyword."),
+      workspace: z.string().optional().describe("Workspace root to scope search to."),
+      project_key: z.string().optional().describe("Project key filter (e.g. trebell-code)."),
+      task_key: z.string().optional().describe("Task key filter (e.g. native-harness-benchmark-optimization)."),
+      statuses: z.array(z.enum(["running", "interrupted", "completed", "failed", "abandoned", "needs_cleanup"])).optional().describe("Filter by statuses."),
+      limit: z.number().int().positive().optional().describe("Maximum candidates to return. Defaults to 10."),
+    },
+    async ({ query, workspace, project_key, task_key, statuses, limit }) => {
+      const res = await runManager.findRuns({
+        query,
+        workspace,
+        project_key,
+        task_key,
+        statuses,
+        limit,
+      });
+
+      const lines = [
+        `Found ${res.candidates.length} run candidate(s) for query: "${query || "*"}"`,
+        res.is_ambiguous
+          ? `WARNING: AMBIGUOUS_RUN_MATCH. Top runs have similar confidence. Do NOT guess. Ask user or adopt explicitly with adopt_run.`
+          : res.top_match
+            ? `Top match: ${res.top_match.run_id} [${res.top_match.status}] score=${res.top_match.match_percentage}% (task_key: ${res.top_match.task_key || "none"})`
+            : "No matching runs found.",
+        "",
+        "Candidates:",
+        ...res.candidates.map(
+          (c, idx) =>
+            `  ${idx + 1}. [${c.status.toUpperCase()}] ${c.run_id} (Score: ${c.match_percentage}%, Confidence: ${c.confidence})\n` +
+            `     Task Key: ${c.task_key || "none"} | Project: ${c.project_key || "none"}\n` +
+            `     Goal: ${c.original_goal.slice(0, 80)}\n` +
+            `     Updated: ${c.updated_at}\n` +
+            `     Evidence: [${c.evidence.join("; ")}]`
+        ),
+      ];
+
+      return formatMcpResponse({
+        success: true,
+        action: "find_runs",
+        display_title: `Find runs (${res.candidates.length} found)`,
+        text: lines.join("\n"),
+        summary: res.is_ambiguous
+          ? `Ambiguous run match: ${res.candidates.length} candidates evaluated`
+          : `Found ${res.candidates.length} candidate runs; top score: ${res.top_match?.match_percentage ?? 0}%`,
+        data: res,
+        warnings: res.is_ambiguous ? [res.ambiguity_reason || "AMBIGUOUS_RUN_MATCH"] : undefined,
+        verification: { performed: true, passed: true, method: "multi_signal_run_search" },
+      });
+    }
+  );
+
+  // 78. adopt_run
+  registerTool(
+    "adopt_run",
+    "Adopts an existing persisted run from any conversation as the active run in the current session, setting pointers and associating conversation ID.",
+    {
+      run_id: z.string().describe("Durable run ID to adopt."),
+      conversation_id: z.string().optional().describe("Current conversation ID to associate with the adopted run."),
+    },
+    async ({ run_id, conversation_id }) => {
+      const res = await runManager.adoptRun(run_id, conversation_id);
+      return formatMcpResponse({
+        success: true,
+        action: `adopt_run "${run_id}"`,
+        display_title: `Adopted run: ${run_id}`,
+        text: [
+          `Run ${run_id} successfully adopted as active run.`,
+          `Status: ${res.run.status}`,
+          `Task Key: ${res.run.task_key || "none"}`,
+          `Project Key: ${res.run.project_key || "none"}`,
+          `Goal: ${res.run.original_goal}`,
+          conversation_id ? `Associated Conversation: ${conversation_id}` : "",
+          "",
+          res.summary_markdown,
+        ]
+          .filter(Boolean)
+          .join("\n"),
+        summary: `Adopted run ${run_id} [${res.run.status}]`,
+        data: res,
+        verification: { performed: true, passed: true, method: "run_adoption" },
       });
     }
   );

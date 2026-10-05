@@ -136,6 +136,8 @@ class ObservabilityManager {
 
     let persistedRunsCount = 0;
     let interruptedRunsCount = 0;
+    let runningRunsCount = 0;
+    let needsCleanupRunsCount = 0;
     const runsDir = getRunsDir();
     if (fsSync.existsSync(runsDir)) {
       try {
@@ -149,6 +151,10 @@ class ObservabilityManager {
                 const rData = JSON.parse(fsSync.readFileSync(runJson, "utf-8"));
                 if (rData.status === "interrupted") {
                   interruptedRunsCount++;
+                } else if (rData.status === "running") {
+                  runningRunsCount++;
+                } else if (rData.status === "needs_cleanup") {
+                  needsCleanupRunsCount++;
                 }
               } catch {}
             }
@@ -163,8 +169,13 @@ class ObservabilityManager {
         server_root: serverRoot,
         persistent_data_root: persistentDataRoot,
         active_run: activeRun?.run_id || null,
+        active_run_project: activeRun?.project_key || null,
+        active_run_task: activeRun?.task_key || null,
+        active_run_status: activeRun?.status || null,
         persisted_runs: persistedRunsCount,
+        running_runs: runningRunsCount,
         interrupted_runs: interruptedRunsCount,
+        needs_cleanup_runs: needsCleanupRunsCount,
         disk_usage_mb: (diskUsageBytes / (1024 * 1024)).toFixed(1),
         disk_usage_bytes: diskUsageBytes,
       },
@@ -263,13 +274,10 @@ class ObservabilityManager {
       `${persistentDataRoot}`,
       ``,
       `Active Run:`,
-      `${activeRun?.run_id || "None"}`,
+      `${activeRun?.run_id || "None"}${activeRun?.task_key ? ` [${activeRun.task_key}]` : ""}`,
       ``,
       `Persisted Runs:`,
-      `${persistedRunsCount}`,
-      ``,
-      `Interrupted Runs:`,
-      `${interruptedRunsCount}`,
+      `${persistedRunsCount} total (running: ${runningRunsCount}, interrupted: ${interruptedRunsCount}, needs_cleanup: ${needsCleanupRunsCount})`,
       ``,
       `Disk Usage:`,
       `${diskUsageMb}`,

@@ -1,6 +1,6 @@
 /**
  * VerityMCP - Activity Monitor UI
- * Standalone, zero-dependency, live-updating progress and operational intent monitor.
+ * Standalone & Host-Native MCP App, live-updating progress and operational intent monitor.
  */
 
 export function getMonitorHtml(): string {
@@ -108,6 +108,7 @@ export function getMonitorHtml(): string {
     }
     .status-badge.working { background: var(--primary-dim); color: var(--primary); }
     .status-badge.idle { background: rgba(148, 163, 184, 0.15); color: #94a3b8; }
+    .status-badge.needs_cleanup { background: var(--warning-dim); color: var(--warning); }
 
     .meta-group {
       display: flex;
@@ -140,6 +141,7 @@ export function getMonitorHtml(): string {
       font-family: var(--mono-font);
       border: 1px solid #334155;
     }
+    .pill.transport { color: var(--primary); border-color: rgba(56, 189, 248, 0.35); font-weight: 600; }
     .pill.warn { color: var(--warning); border-color: rgba(251, 191, 36, 0.3); }
     .pill.fail { color: var(--danger); border-color: rgba(248, 113, 113, 0.3); }
 
@@ -442,14 +444,15 @@ export function getMonitorHtml(): string {
 
     <div class="meta-group">
       <div class="meta-item">
-        <span>Workspace:</span>
-        <strong id="wsName">Local</strong>
+        <span>Task:</span>
+        <strong id="taskKey">active</strong>
       </div>
       <div class="meta-item">
         <span>Elapsed:</span>
         <strong id="sessionElapsed">00:00</strong>
       </div>
       <div class="pills">
+        <span class="pill transport" id="transportBadge">Local SSE</span>
         <span class="pill" id="eventsCount">0 events</span>
         <span class="pill warn" id="warnCount">0 warn</span>
         <span class="pill fail" id="failCount">0 fail</span>
@@ -522,10 +525,11 @@ export function getMonitorHtml(): string {
       const statusDot = document.getElementById('statusDot');
       const statusBadge = document.getElementById('statusBadge');
       const sessionElapsed = document.getElementById('sessionElapsed');
+      const transportBadge = document.getElementById('transportBadge');
       const eventsCount = document.getElementById('eventsCount');
       const warnCount = document.getElementById('warnCount');
       const failCount = document.getElementById('failCount');
-      const wsName = document.getElementById('wsName');
+      const taskKey = document.getElementById('taskKey');
       const currentTitle = document.getElementById('currentTitle');
       const currentWhyBox = document.getElementById('currentWhyBox');
       const currentWhyText = document.getElementById('currentWhyText');
@@ -533,6 +537,84 @@ export function getMonitorHtml(): string {
       const currentStatus = document.getElementById('currentStatus');
       const currentElapsed = document.getElementById('currentElapsed');
       const btnAutoScroll = document.getElementById('btnAutoScroll');
+
+      // Detect Host Environment: Embedded iframe (ChatGPT / MCP App) vs Standalone localhost
+      const isEmbedded = (function() {
+        try {
+          return window.parent && window.parent !== window;
+        } catch (e) {
+          return true; // Cross-origin access restriction proves iframe containment
+        }
+      })();
+
+      if (transportBadge) {
+        transportBadge.textContent = isEmbedded ? 'MCP Host Bridge' : 'Local SSE';
+      }
+
+      // MCP Host Bridge via JSON-RPC 2.0 postMessage
+      let rpcSeq = 1;
+      const pendingRpcCalls = new Map();
+
+      function callMcpToolViaBridge(toolName, toolArgs) {
+        return new Promise((resolve, reject) => {
+          const id = 'rpc_' + (rpcSeq++);
+          const timer = setTimeout(() => {
+            if (pendingRpcCalls.has(id)) {
+              pendingRpcCalls.delete(id);
+              reject(new Error('RPC call timeout: ' + toolName));
+            }
+          }, 4500);
+
+          pendingRpcCalls.set(id, { resolve, reject, timer });
+
+          window.parent.postMessage({
+            jsonrpc: '2.0',
+            id,
+            method: 'tools/call',
+            params: {
+              name: toolName,
+              arguments: toolArgs
+            }
+          }, '*');
+        });
+      }
+
+      window.addEventListener('message', (event) => {
+        const data = event.data;
+        if (!data || typeof data !== 'object') return;
+        if (data.id && pendingRpcCalls.has(data.id)) {
+          const entry = pendingRpcCalls.get(data.id);
+          pendingRpcCalls.delete(data.id);
+          clearTimeout(entry.timer);
+          if (data.error) {
+            entry.reject(data.error);
+          } else {
+            entry.resolve(data.result);
+          }
+        }
+      });
+
+      function parseStructuredMcpData(res) {
+        if (!res) return null;
+        if (res.data) return res.data;
+        if (Array.isArray(res.content)) {
+          for (const item of res.content) {
+            if (item.type === 'text' && item.text) {
+              const marker = '--- STRUCTURED_PAYLOAD_JSON ---';
+              const idx = item.text.indexOf(marker);
+              if (idx !== -1) {
+                try {
+                  const jsonStr = item.text.slice(idx + marker.length).trim();
+                  const parsed = JSON.parse(jsonStr);
+                  if (parsed.data) return parsed.data;
+                  return parsed;
+                } catch {}
+              }
+            }
+          }
+        }
+        return res;
+      }
 
       // Pop-out window
       document.getElementById('btnPip').addEventListener('click', () => {
@@ -724,17 +806,15 @@ export function getMonitorHtml(): string {
             bodyHtml += '<div class="event-prop"><strong>Reason:</strong> ' + escapeHtml(e.reason) + '</div>';
           }
 
-          html += \`
-            <div class="event-card" onclick="this.classList.toggle('expanded')">
-              <div class="event-header">
-                \${icon}
-                <span class="event-time">\${time}</span>
-                <span class="event-title" title="\${escapeHtml(title)}">\${escapeHtml(title)}</span>
-                \${badgeHtml}
-              </div>
-              \${bodyHtml ? '<div class="event-body">' + bodyHtml + '</div>' : ''}
-            </div>
-          \`;
+          html += '<div class="event-card" onclick="this.classList.toggle(\'expanded\')">' +
+            '<div class="event-header">' +
+              icon +
+              '<span class="event-time">' + time + '</span>' +
+              '<span class="event-title" title="' + escapeHtml(title) + '">' + escapeHtml(title) + '</span>' +
+              badgeHtml +
+            '</div>' +
+            (bodyHtml ? '<div class="event-body">' + bodyHtml + '</div>' : '') +
+          '</div>';
         });
 
         eventsList.innerHTML = html;
@@ -756,67 +836,81 @@ export function getMonitorHtml(): string {
           .replace(/'/g, '&#039;');
       }
 
+      function handleNewEventsBatch(batch, nextCursor, currentAction) {
+        if (batch && batch.length > 0) {
+          lastActivityTime = Date.now();
+          events.push(...batch);
+          if (nextCursor) lastCursor = nextCursor;
+
+          eventsCount.textContent = events.length + ' events';
+          warnCount.textContent = events.filter(e => e.type === 'warning').length + ' warn';
+          failCount.textContent = events.filter(e => e.type === 'failure').length + ' fail';
+
+          renderEvents();
+        }
+
+        if (currentAction !== undefined) {
+          updateCurrentAction(currentAction);
+        }
+      }
+
       // Live Polling Engine
       async function pollActivity() {
+        if (isEmbedded) {
+          // Use MCP Host PostMessage Tool Bridge
+          try {
+            const raw = await callMcpToolViaBridge('activity_read', { cursor: lastCursor, limit: 50 });
+            const data = parseStructuredMcpData(raw);
+            if (data && data.events) {
+              handleNewEventsBatch(data.events, data.next_cursor, data.current_action);
+            }
+          } catch (err) {}
+          return;
+        }
+
+        // Standalone Local HTTP Engine
         try {
           const res = await fetch('/activity/events?cursor=' + lastCursor + '&limit=100');
           if (res.ok) {
             const data = await res.json();
-            if (data.events && data.events.length > 0) {
-              lastActivityTime = Date.now();
-              events.push(...data.events);
-              lastCursor = data.next_cursor || lastCursor;
-              
-              eventsCount.textContent = events.length + ' events';
-              warnCount.textContent = events.filter(e => e.type === 'warning').length + ' warn';
-              failCount.textContent = events.filter(e => e.type === 'failure').length + ' fail';
-
-              renderEvents();
-            }
-
-            if (data.current_action !== undefined) {
-              updateCurrentAction(data.current_action);
-            }
+            handleNewEventsBatch(data.events, data.next_cursor, data.current_action);
           }
-        } catch (err) {
-          // Silent polling retry
-        }
+        } catch (err) {}
       }
 
-      // Initial health fetch for workspace name
-      fetch('/healthz')
-        .then(r => r.json())
-        .then(h => {
-          if (h.workspace) {
-            const parts = h.workspace.split(/[\\\\/]/);
-            wsName.textContent = parts[parts.length - 1] || 'Trebell';
-          }
-        })
-        .catch(() => {});
-
-      // Setup SSE with auto polling fallback
-      try {
-        const sse = new EventSource('/activity/stream');
-        sse.onmessage = (msg) => {
-          try {
-            const evt = JSON.parse(msg.data);
-            lastActivityTime = Date.now();
-            events.push(evt);
-            if (evt.seq > lastCursor) lastCursor = evt.seq;
-            eventsCount.textContent = events.length + ' events';
-            if (evt.type === 'warning') warnCount.textContent = (parseInt(warnCount.textContent) + 1) + ' warn';
-            if (evt.type === 'failure') failCount.textContent = (parseInt(failCount.textContent) + 1) + ' fail';
-            if (evt.type === 'action_started') updateCurrentAction(evt);
-            else if (evt.type === 'action_completed' || evt.type === 'verification' || evt.type === 'failure') {
-              updateCurrentAction(null);
+      if (!isEmbedded) {
+        // Initial health fetch for workspace / task name in standalone mode
+        fetch('/healthz')
+          .then(r => r.json())
+          .then(h => {
+            if (h.workspace) {
+              const parts = h.workspace.split(/[\\\\/]/);
+              taskKey.textContent = parts[parts.length - 1] || 'Trebell';
             }
-            renderEvents();
-          } catch {}
-        };
-        sse.onerror = () => {
-          // SSE fallback handled by interval
-        };
-      } catch {}
+          })
+          .catch(() => {});
+
+        // Setup SSE in standalone mode
+        try {
+          const sse = new EventSource('/activity/stream');
+          sse.onmessage = (msg) => {
+            try {
+              const evt = JSON.parse(msg.data);
+              lastActivityTime = Date.now();
+              events.push(evt);
+              if (evt.seq > lastCursor) lastCursor = evt.seq;
+              eventsCount.textContent = events.length + ' events';
+              if (evt.type === 'warning') warnCount.textContent = (parseInt(warnCount.textContent) + 1) + ' warn';
+              if (evt.type === 'failure') failCount.textContent = (parseInt(failCount.textContent) + 1) + ' fail';
+              if (evt.type === 'action_started') updateCurrentAction(evt);
+              else if (evt.type === 'action_completed' || evt.type === 'verification' || evt.type === 'failure') {
+                updateCurrentAction(null);
+              }
+              renderEvents();
+            } catch {}
+          };
+        } catch {}
+      }
 
       setInterval(pollActivity, 750);
       pollActivity();

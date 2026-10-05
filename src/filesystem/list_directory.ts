@@ -1,12 +1,13 @@
 import fs from "node:fs/promises";
 import path from "node:path";
-import { resolveWorkspacePath } from "../security/roots.js";
+import { resolvePathWithWorkspace } from "../security/roots.js";
 import type { StandardToolResponse } from "../types/index.js";
 
 export interface ListDirectoryOptions {
   workspaceRoot: string;
   allowedRoots?: string[];
   dirPath?: string;
+  path?: string; // Alias for dirPath
   recursive?: boolean;
   maxDepth?: number;
   showHidden?: boolean;
@@ -23,6 +24,9 @@ export interface DirEntryInfo {
 
 export interface ListDirectoryData {
   directory: string;
+  requested_path: string;
+  resolved_path: string;
+  within_workspace: boolean;
   entries: DirEntryInfo[];
   totalCount: number;
   fileCount: number;
@@ -47,20 +51,21 @@ export async function executeListDirectory(
   const {
     workspaceRoot,
     allowedRoots = [],
-    dirPath = ".",
     recursive = false,
     maxDepth = 2,
     showHidden = false,
     ignoreCommonDirs = true,
   } = options;
 
-  let resolvedDir: string;
+  const targetDirPath = options.dirPath || options.path || ".";
+
+  let resolution;
   try {
-    resolvedDir = resolveWorkspacePath(workspaceRoot, dirPath, allowedRoots);
+    resolution = resolvePathWithWorkspace(workspaceRoot, targetDirPath, allowedRoots);
   } catch (err: any) {
     return {
       success: false,
-      action: `list_directory "${dirPath}"`,
+      action: `list_directory "${targetDirPath}"`,
       text: `Path validation failed: ${err.message}`,
       verification: {
         performed: true,
@@ -72,14 +77,17 @@ export async function executeListDirectory(
     };
   }
 
+  const resolvedDir = resolution.resolvedPath;
+  const withinWorkspace = resolution.withinWorkspace;
+
   let stat;
   try {
     stat = await fs.stat(resolvedDir);
   } catch (err: any) {
     return {
       success: false,
-      action: `list_directory "${dirPath}"`,
-      text: `Directory "${dirPath}" does not exist: ${err.message}`,
+      action: `list_directory "${targetDirPath}"`,
+      text: `Directory "${targetDirPath}" (resolved: "${resolvedDir}") does not exist: ${err.message}`,
       verification: {
         performed: true,
         passed: false,
@@ -93,8 +101,8 @@ export async function executeListDirectory(
   if (!stat.isDirectory()) {
     return {
       success: false,
-      action: `list_directory "${dirPath}"`,
-      text: `"${dirPath}" is a file, not a directory. Use read_file instead.`,
+      action: `list_directory "${targetDirPath}"`,
+      text: `"${targetDirPath}" is a file, not a directory. Use read_file instead.`,
       verification: {
         performed: true,
         passed: false,
@@ -122,7 +130,15 @@ export async function executeListDirectory(
       if (ignoreCommonDirs && COMMON_IGNORE.has(name) && currentDepth > 0) continue;
 
       const fullItemPath = path.join(currentDir, name);
-      const relToWorkspace = path.relative(workspaceRoot, fullItemPath).replace(/\\/g, "/");
+
+      // Compute relativePath: if target is within workspace, relative to workspace root;
+      // otherwise, relative to the target resolvedDir.
+      let relPath: string;
+      if (withinWorkspace) {
+        relPath = path.relative(workspaceRoot, fullItemPath).replace(/\\/g, "/");
+      } else {
+        relPath = path.relative(resolvedDir, fullItemPath).replace(/\\/g, "/") || name;
+      }
 
       let itemStat;
       try {
@@ -143,7 +159,7 @@ export async function executeListDirectory(
 
       entries.push({
         name,
-        relativePath: relToWorkspace,
+        relativePath: relPath,
         type,
         sizeBytes: isFile ? itemStat.size : undefined,
         modifiedAt: itemStat.mtime.toISOString(),
@@ -168,23 +184,34 @@ export async function executeListDirectory(
     return `${icon.padEnd(7)} ${e.relativePath}${size}`;
   });
 
-  const header = `Directory: ${dirPath} (${entries.length} items: ${directoryCount} directories, ${fileCount} files)`;
+  const warningNote = resolution.warning ? `\nNotice: ${resolution.warning}` : "";
+  const header = `Directory: ${targetDirPath} (${entries.length} items: ${directoryCount} directories, ${fileCount} files)${warningNote}`;
   const text = `${header}\n${lines.slice(0, 300).join("\n")}${
     entries.length > 300 ? `\n... and ${entries.length - 300} more items` : ""
   }`;
 
   return {
     success: true,
-    action: `list_directory "${dirPath}"`,
+    action: `list_directory "${targetDirPath}"`,
     text,
     verification: {
       performed: true,
       passed: true,
       method: "fs_readdir_scanned",
-      details: { totalCount: entries.length, fileCount, directoryCount },
+      details: {
+        totalCount: entries.length,
+        fileCount,
+        directoryCount,
+        requested_path: targetDirPath,
+        resolved_path: resolvedDir,
+        within_workspace: withinWorkspace,
+      },
     },
     data: {
-      directory: dirPath,
+      directory: targetDirPath,
+      requested_path: targetDirPath,
+      resolved_path: resolvedDir,
+      within_workspace: withinWorkspace,
       entries,
       totalCount: entries.length,
       fileCount,

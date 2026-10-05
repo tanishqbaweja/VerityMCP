@@ -18,6 +18,9 @@ import {
   atomicWriteFile,
   sanitizeObject,
   generateRunSummaryMarkdown,
+  deriveTaskIdentity,
+  computeRunMatchScore,
+  slugify,
 } from "./utils.js";
 import { activityStream, type ActivityEvent } from "../observability/activity_stream.js";
 import { calculateSha256 } from "../verification/index.js";
@@ -36,59 +39,88 @@ import type {
   Checkpoint,
   ActiveRunPointer,
   RunResumeResult,
+  RunCandidate,
+  FindRunsResult,
 } from "./types.js";
 
 export class RunManager {
   private activeRun: RunMetadata | null = null;
   private initialized = false;
-  private eventWriteStreams = new Map<string, fs.WriteStream>();
+  private serverInstanceId = `srv_${process.pid}_${Date.now()}`;
+  private writeQueue: Promise<void> = Promise.resolve();
+
+  private queueWrite(fn: () => Promise<void>): Promise<void> {
+    this.writeQueue = this.writeQueue.then(fn, fn);
+    return this.writeQueue;
+  }
 
   constructor() {}
 
   /**
    * Initialize run manager on server startup.
-   * Detects interrupted runs from previous process crashes or computer restarts.
+   * Scans all runs and detects interrupted runs from previous process crashes or computer restarts.
    */
   public async init(): Promise<void> {
     if (this.initialized) return;
     await ensureDirectoriesExist();
 
+    const runsDir = getRunsDir();
+    if (fs.existsSync(runsDir)) {
+      try {
+        const entries = await fsp.readdir(runsDir, { withFileTypes: true });
+        for (const entry of entries) {
+          if (entry.isDirectory()) {
+            const runJsonPath = path.join(runsDir, entry.name, "run.json");
+            if (fs.existsSync(runJsonPath)) {
+              try {
+                const runRaw = await fsp.readFile(runJsonPath, "utf-8");
+                const runData: RunMetadata = JSON.parse(runRaw);
+
+                // If run was left "running" by a previous server PID:
+                if (runData.status === "running" && runData.server_pid !== process.pid) {
+                  runData.status = "interrupted";
+                  runData.updated_at = new Date().toISOString();
+                  runData.warnings.push(
+                    "Server process ended abruptly while run was in progress. Marked as interrupted on startup."
+                  );
+
+                  await atomicWriteJson(runJsonPath, runData);
+                  await atomicWriteFile(
+                    path.join(runsDir, entry.name, "summary.md"),
+                    generateRunSummaryMarkdown(runData)
+                  );
+                }
+              } catch {}
+            }
+          }
+        }
+      } catch (err: any) {
+        console.warn(`[VerityRunManager] Failed scanning runs on startup: ${err.message}`);
+      }
+    }
+
+    // Inspect active run pointer
     const activePointerPath = getActiveRunPath();
     if (fs.existsSync(activePointerPath)) {
       try {
         const raw = await fsp.readFile(activePointerPath, "utf-8");
         const pointer: ActiveRunPointer = JSON.parse(raw);
 
-        // If prior state was "running", but this is a new process session:
-        if (pointer.status === "running" && pointer.server_pid !== process.pid) {
-          const runJsonPath = path.join(getRunDirPath(pointer.run_id), "run.json");
-          if (fs.existsSync(runJsonPath)) {
-            const runRaw = await fsp.readFile(runJsonPath, "utf-8");
-            const runData: RunMetadata = JSON.parse(runRaw);
+        const runJsonPath = path.join(getRunDirPath(pointer.run_id), "run.json");
+        if (fs.existsSync(runJsonPath)) {
+          const runRaw = await fsp.readFile(runJsonPath, "utf-8");
+          const runData: RunMetadata = JSON.parse(runRaw);
 
-            runData.status = "interrupted";
-            runData.updated_at = new Date().toISOString();
-            runData.warnings.push("Server process ended abruptly while run was in progress. Marked as interrupted on restart.");
-
-            await atomicWriteJson(runJsonPath, runData);
-            await atomicWriteFile(
-              path.join(getRunDirPath(pointer.run_id), "summary.md"),
-              generateRunSummaryMarkdown(runData)
-            );
-
+          if (pointer.status === "running" && pointer.server_pid !== process.pid) {
             pointer.status = "interrupted";
-            pointer.updated_at = runData.updated_at;
+            pointer.updated_at = new Date().toISOString();
             await atomicWriteJson(activePointerPath, pointer);
-          }
-        } else if (pointer.status === "running") {
-          const runJsonPath = path.join(getRunDirPath(pointer.run_id), "run.json");
-          if (fs.existsSync(runJsonPath)) {
-            const runRaw = await fsp.readFile(runJsonPath, "utf-8");
-            this.activeRun = JSON.parse(runRaw);
+          } else if (pointer.status === "running") {
+            this.activeRun = runData;
           }
         }
       } catch (err: any) {
-        console.warn(`[VerityRunManager] Failed inspecting prior active run: ${err.message}`);
+        console.warn(`[VerityRunManager] Failed inspecting prior active run pointer: ${err.message}`);
       }
     }
 
@@ -109,29 +141,264 @@ export class RunManager {
   }
 
   /**
+   * Find runs across all conversations using multi-signal ranking.
+   * Distinguishes high-confidence matches and detects ambiguous run candidates.
+   */
+  public async findRuns(options: {
+    query: string;
+    workspace?: string;
+    project_key?: string;
+    task_key?: string;
+    statuses?: RunStatus[];
+    limit?: number;
+  }): Promise<FindRunsResult> {
+    await this.init();
+
+    const runsDir = getRunsDir();
+    if (!fs.existsSync(runsDir)) {
+      return {
+        query: options.query,
+        candidates: [],
+        is_ambiguous: false,
+        recommended_action: "none_found",
+      };
+    }
+
+    const entries = await fsp.readdir(runsDir, { withFileTypes: true });
+    const candidates: RunCandidate[] = [];
+
+    for (const entry of entries) {
+      if (entry.isDirectory()) {
+        const runJsonPath = path.join(runsDir, entry.name, "run.json");
+        if (fs.existsSync(runJsonPath)) {
+          try {
+            const raw = await fsp.readFile(runJsonPath, "utf-8");
+            const runData: RunMetadata = JSON.parse(raw);
+
+            // Filter by requested status if specified
+            if (options.statuses && options.statuses.length > 0 && !options.statuses.includes(runData.status)) {
+              continue;
+            }
+
+            const score = computeRunMatchScore(runData, options.query, {
+              workspaceFilter: options.workspace,
+              projectKeyFilter: options.project_key,
+              taskKeyFilter: options.task_key,
+            });
+
+            if (score.match_percentage > 0) {
+              const activePhase = runData.phases.find((p) => p.status === "in_progress")?.title;
+              candidates.push({
+                run_id: runData.run_id,
+                match_percentage: score.match_percentage,
+                confidence: score.confidence,
+                status: runData.status,
+                project_key: runData.project_key,
+                task_key: runData.task_key,
+                workspace: runData.workspace,
+                original_goal: runData.original_goal,
+                current_phase: activePhase,
+                evidence: score.evidence,
+                match_details: score.match_details,
+                updated_at: runData.updated_at,
+                started_at: runData.started_at,
+                completed_steps_count: runData.completed_steps.length,
+              });
+            }
+          } catch {}
+        }
+      }
+    }
+
+    // Sort by match_percentage descending, then recency
+    candidates.sort((a, b) => {
+      if (b.match_percentage !== a.match_percentage) {
+        return b.match_percentage - a.match_percentage;
+      }
+      return new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime();
+    });
+
+    const limit = options.limit ?? 20;
+    const truncated = candidates.slice(0, limit);
+
+    // Ambiguity Detection Guard
+    let is_ambiguous = false;
+    let ambiguity_reason: string | undefined = undefined;
+    let recommended_action: "adopt_top_match" | "ask_user_choice" | "start_new_run" | "none_found" = "none_found";
+
+    if (truncated.length === 0) {
+      recommended_action = "none_found";
+    } else if (
+      truncated.length >= 2 &&
+      truncated[0].match_percentage >= 50 &&
+      truncated[0].match_percentage - truncated[1].match_percentage <= 12
+    ) {
+      is_ambiguous = true;
+      ambiguity_reason = `AMBIGUOUS_RUN_MATCH: Top matching candidates "${truncated[0].run_id}" (${truncated[0].match_percentage}%) and "${truncated[1].run_id}" (${truncated[1].match_percentage}%) have closely competing scores. Ask the user which task to adopt.`;
+      recommended_action = "ask_user_choice";
+    } else if (truncated[0].match_percentage >= 45) {
+      is_ambiguous = false;
+      recommended_action = "adopt_top_match";
+    } else {
+      is_ambiguous = false;
+      recommended_action = "start_new_run";
+    }
+
+    return {
+      query: options.query,
+      candidates: truncated,
+      top_match: truncated[0],
+      is_ambiguous,
+      ambiguity_reason,
+      recommended_action,
+    };
+  }
+
+  /**
+   * Adopt a specific durable run from disk as the active run in the current session.
+   */
+  public async adoptRun(
+    runId: string,
+    conversationId?: string
+  ): Promise<{
+    run: RunMetadata;
+    summary_markdown: string;
+  }> {
+    await this.init();
+
+    const runDir = getRunDirPath(runId);
+    const runJsonPath = path.join(runDir, "run.json");
+    if (!fs.existsSync(runJsonPath)) {
+      throw new Error(`Run "${runId}" not found in persistent store (${runDir}).`);
+    }
+
+    const runData: RunMetadata = JSON.parse(await fsp.readFile(runJsonPath, "utf-8"));
+    const now = new Date().toISOString();
+
+    runData.adopted_at = now;
+    runData.updated_at = now;
+
+    if (conversationId) {
+      runData.associated_conversation_ids = runData.associated_conversation_ids || [];
+      if (!runData.associated_conversation_ids.includes(conversationId)) {
+        runData.associated_conversation_ids.push(conversationId);
+      }
+    }
+
+    this.activeRun = runData;
+
+    await atomicWriteJson(runJsonPath, runData);
+    const summaryMarkdown = generateRunSummaryMarkdown(runData);
+    await atomicWriteFile(path.join(runDir, "summary.md"), summaryMarkdown);
+
+    // Update active run pointer
+    const pointer: ActiveRunPointer = {
+      run_id: runData.run_id,
+      status: runData.status,
+      project_key: runData.project_key,
+      task_key: runData.task_key,
+      last_checkpoint: runData.last_checkpoint?.timestamp || now,
+      workspace: runData.workspace,
+      started_at: runData.started_at,
+      updated_at: now,
+      server_pid: process.pid,
+      server_instance_id: this.serverInstanceId,
+      heartbeat_at: now,
+    };
+    await atomicWriteJson(getActiveRunPath(), pointer);
+
+    activityStream.emit({
+      type: "plan",
+      title: `Adopted durable run: ${runId}`,
+      display_title: `Run adopted: ${runData.task_key || runId}`,
+      purpose: `Adopted run across chat sessions for goal: ${runData.original_goal.slice(0, 60)}`,
+      status: runData.status === "running" ? "running" : "completed",
+      details: { run_id: runId, project_key: runData.project_key, task_key: runData.task_key },
+    });
+
+    return {
+      run: runData,
+      summary_markdown: summaryMarkdown,
+    };
+  }
+
+  /**
    * Start a new durable run.
+   * Includes idempotency key protection and rapid-replay suppression.
    */
   public async startRun(options: {
     goal: string;
     workspace?: string;
     purpose?: string;
     phases?: Phase[];
+    project_key?: string;
+    task_key?: string;
+    tags?: string[];
+    idempotency_key?: string;
+    conversation_id?: string;
     metadata?: Record<string, unknown>;
   }): Promise<{
     run: RunMetadata;
     storage_path: string;
     monitor_url: string;
     ui_resource_uri: string;
+    is_replayed?: boolean;
   }> {
     await this.init();
 
-    const runId = this.generateRunId();
-    const now = new Date().toISOString();
-    const serverRoot = getServerRoot();
     const workspace = options.workspace || process.cwd();
+    const now = new Date().toISOString();
+
+    // 1. Idempotency Key check: if an existing run matches idempotency_key, return it
+    if (options.idempotency_key) {
+      const runs = await this.listRuns({ limit: 50 });
+      for (const r of runs) {
+        const runJsonPath = path.join(getRunDirPath(r.run_id), "run.json");
+        if (fs.existsSync(runJsonPath)) {
+          try {
+            const existingRun: RunMetadata = JSON.parse(await fsp.readFile(runJsonPath, "utf-8"));
+            if (existingRun.idempotency_key === options.idempotency_key) {
+              this.activeRun = existingRun;
+              return {
+                run: existingRun,
+                storage_path: getRunDirPath(existingRun.run_id),
+                monitor_url: `http://localhost:${process.env.VERITY_PORT || 7980}/monitor`,
+                ui_resource_uri: "ui://verity/activity-monitor",
+                is_replayed: true,
+              };
+            }
+          } catch {}
+        }
+      }
+    }
+
+    // 2. Rapid Replay Suppression: if active run was started in the last 15 seconds with identical goal
+    if (
+      this.activeRun &&
+      this.activeRun.original_goal === options.goal &&
+      (Date.now() - new Date(this.activeRun.started_at).getTime()) < 15000
+    ) {
+      return {
+        run: this.activeRun,
+        storage_path: getRunDirPath(this.activeRun.run_id),
+        monitor_url: `http://localhost:${process.env.VERITY_PORT || 7980}/monitor`,
+        ui_resource_uri: "ui://verity/activity-monitor",
+        is_replayed: true,
+      };
+    }
+
+    const runId = this.generateRunId();
+    const serverRoot = getServerRoot();
     const runDir = getRunDirPath(runId);
 
     await fsp.mkdir(runDir, { recursive: true });
+
+    // Derive normalized project_key, task_key, tags, and goal fingerprint
+    const identity = deriveTaskIdentity(options.goal, workspace, {
+      projectKey: options.project_key,
+      taskKey: options.task_key,
+      tags: options.tags,
+    });
 
     const initialPhases: Phase[] =
       options.phases && options.phases.length > 0
@@ -145,6 +412,15 @@ export class RunManager {
 
     const run: RunMetadata = {
       run_id: runId,
+      project_key: identity.project_key,
+      task_key: identity.task_key,
+      tags: identity.tags,
+      goal_fingerprint: identity.goal_fingerprint,
+      idempotency_key: options.idempotency_key,
+      origin_conversation_id: options.conversation_id,
+      associated_conversation_ids: options.conversation_id ? [options.conversation_id] : [],
+      server_instance_id: this.serverInstanceId,
+      heartbeat_at: now,
       started_at: now,
       updated_at: now,
       status: "running",
@@ -191,20 +467,21 @@ export class RunManager {
       worktrees: run.worktrees,
       cleanup_debt: run.cleanup_debt,
     });
-    await atomicWriteFile(
-      path.join(runDir, "summary.md"),
-      generateRunSummaryMarkdown(run)
-    );
+    await atomicWriteFile(path.join(runDir, "summary.md"), generateRunSummaryMarkdown(run));
 
     // Update active run pointer
     const pointer: ActiveRunPointer = {
       run_id: runId,
       status: "running",
+      project_key: run.project_key,
+      task_key: run.task_key,
       last_checkpoint: now,
       workspace,
       started_at: now,
       updated_at: now,
       server_pid: process.pid,
+      server_instance_id: this.serverInstanceId,
+      heartbeat_at: now,
     };
     await atomicWriteJson(getActiveRunPath(), pointer);
 
@@ -212,11 +489,16 @@ export class RunManager {
     activityStream.emit({
       type: "plan",
       title: `Started durable run: ${runId}`,
-      display_title: `Run started: ${run.original_goal.slice(0, 50)}`,
+      display_title: `Run started: [${run.task_key}] ${run.original_goal.slice(0, 45)}`,
       purpose: options.purpose || `Execute autonomous goal: ${options.goal}`,
       purpose_source: options.purpose ? "caller" : "tool_default",
       status: "running",
-      details: { run_id: runId, workspace },
+      details: {
+        run_id: runId,
+        project_key: run.project_key,
+        task_key: run.task_key,
+        workspace,
+      },
     });
 
     return {
@@ -229,6 +511,7 @@ export class RunManager {
 
   /**
    * Append an activity event immediately to the active run's events.jsonl.
+   * Automatically tracks created browser sessions, background processes, worktrees, and temporary files.
    */
   public appendActivityEvent(event: ActivityEvent): void {
     if (!this.activeRun) return;
@@ -264,6 +547,219 @@ export class RunManager {
       }
     } else if (event.type === "warning") {
       this.activeRun.warnings.push(event.title || "Warning encountered");
+    }
+
+    // Automatic Resource & Cleanup Debt Lifecycle Hooks
+    this.autoTrackResourcesFromEvent(event);
+  }
+
+  /**
+   * Automatic resource tracking: inspects events to register and resolve resources.
+   */
+  private autoTrackResourcesFromEvent(event: ActivityEvent): void {
+    if (!this.activeRun) return;
+    let stateChanged = false;
+
+    // 1. Browser Sessions
+    const isBrowserTool = Boolean(event.tool && event.tool.startsWith("browser_"));
+    const bSessionId =
+      event.browser_session_id ||
+      (isBrowserTool
+        ? (event.details?.session_id as string) ||
+          (event.tool === "browser_open" && typeof event.target === "string" ? event.target : undefined)
+        : undefined);
+
+    if (bSessionId) {
+      let tracked = this.activeRun.browser_sessions.find((b) => b.id === bSessionId);
+      if (!tracked && event.tool !== "browser_close") {
+        tracked = {
+          id: bSessionId,
+          url: typeof event.target === "string" && event.target.startsWith("http") ? event.target : undefined,
+          created: event.timestamp,
+          status: "active",
+          cleanup_required: true,
+          active: true,
+        };
+        this.activeRun.browser_sessions.push(tracked);
+        this.activeRun.cleanup_debt.push({
+          id: `debt_browser_${bSessionId}`,
+          type: "browser_session",
+          resource_id: bSessionId,
+          description: `Browser session "${bSessionId}"`,
+          resolved: false,
+        });
+        stateChanged = true;
+      } else if (tracked) {
+        if (event.tool === "browser_close" || event.title?.toLowerCase().includes("browser_close")) {
+          tracked.active = false;
+          tracked.status = "closed";
+          // Resolve cleanup debt
+          const debt = this.activeRun.cleanup_debt.find(
+            (c) => c.type === "browser_session" && c.resource_id === bSessionId
+          );
+          if (debt && !debt.resolved) {
+            debt.resolved = true;
+            debt.resolved_at = new Date().toISOString();
+          }
+          stateChanged = true;
+        } else if (event.tool === "browser_navigate" && typeof event.target === "string") {
+          tracked.url = event.target;
+          stateChanged = true;
+        }
+      }
+    }
+
+    // 2. Process Sessions
+    const isProcessTool = Boolean(event.tool && (event.tool.includes("process") || event.tool === "exec_command"));
+    const pSessionId =
+      event.process_session_id ||
+      (isProcessTool
+        ? (event.details?.process_id as string) ||
+          (event.details?.session_id as string) ||
+          (typeof event.target === "string" && !event.target.startsWith("http") && !event.target.endsWith(".png") ? event.target : undefined)
+        : undefined);
+
+    if (pSessionId) {
+      let trackedProc = this.activeRun.process_sessions.find((p) => p.id === pSessionId);
+      if (!trackedProc && event.tool !== "stop_process" && event.tool !== "kill_process") {
+        trackedProc = {
+          id: pSessionId,
+          pid: (event.details?.pid as number) || undefined,
+          command: typeof event.target === "string" ? event.target : "background process",
+          running: true,
+          cleanup_required: true,
+          started_at: event.timestamp,
+        };
+        this.activeRun.process_sessions.push(trackedProc);
+        this.activeRun.cleanup_debt.push({
+          id: `debt_process_${pSessionId}`,
+          type: "process_session",
+          resource_id: pSessionId,
+          description: `Background process "${pSessionId}"`,
+          resolved: false,
+        });
+        stateChanged = true;
+      } else if (trackedProc) {
+        if (
+          event.tool === "stop_process" ||
+          event.tool === "kill_process" ||
+          event.title?.toLowerCase().includes("stopping process") ||
+          event.title?.toLowerCase().includes("process completed")
+        ) {
+          trackedProc.running = false;
+          const debt = this.activeRun.cleanup_debt.find(
+            (c) => c.type === "process_session" && c.resource_id === pSessionId
+          );
+          if (debt && !debt.resolved) {
+            debt.resolved = true;
+            debt.resolved_at = new Date().toISOString();
+          }
+          stateChanged = true;
+        }
+      }
+    }
+
+    // 3. Temporary Test Screenshot / Artifact Files
+    if (
+      event.type === "action_completed" &&
+      (event.tool === "desktop_screenshot" || event.tool === "browser_screenshot")
+    ) {
+      const outputPath =
+        (event.details?.output_path as string) ||
+        (typeof event.evidence === "object" && event.evidence ? (event.evidence as any).output_path as string : undefined) ||
+        (typeof event.target === "string" && event.target.endsWith(".png") ? event.target : undefined);
+
+      if (outputPath) {
+        const existing = this.activeRun.temporary_files.find((f) => f.path === outputPath);
+        if (!existing) {
+          this.activeRun.temporary_files.push({
+            path: outputPath,
+            tool: event.tool,
+            role: "temporary_test",
+            cleanup_required: true,
+            created_at: event.timestamp,
+          });
+          this.activeRun.cleanup_debt.push({
+            id: `debt_file_${Buffer.from(outputPath).toString("hex").slice(0, 12)}`,
+            type: "temporary_file",
+            path: outputPath,
+            description: `Temporary screenshot file "${outputPath}"`,
+            resolved: false,
+          });
+          stateChanged = true;
+        }
+      }
+    }
+
+    // 4. File Deletion -> Cleanup Debt Resolution
+    if (event.tool === "delete_file" && event.type === "action_completed") {
+      const deletedPath =
+        typeof event.target === "string"
+          ? event.target
+          : (event.details?.file_path as string) || (event.details?.path as string);
+      if (deletedPath) {
+        const debt = this.activeRun.cleanup_debt.find(
+          (c) =>
+            c.type === "temporary_file" &&
+            c.path &&
+            (path.resolve(c.path) === path.resolve(deletedPath) || c.path.includes(deletedPath))
+        );
+        if (debt && !debt.resolved) {
+          debt.resolved = true;
+          debt.resolved_at = new Date().toISOString();
+          stateChanged = true;
+        }
+      }
+    }
+
+    // 5. Worktrees
+    if (event.tool === "enter_worktree" && event.type === "action_completed") {
+      const wtPath = (event.details?.worktree_path as string) || (event.target as string);
+      const wtBranch = (event.details?.branch as string) || "worktree-branch";
+      if (wtPath && !this.activeRun.worktrees.some((w) => path.resolve(w.path) === path.resolve(wtPath))) {
+        this.activeRun.worktrees.push({
+          path: wtPath,
+          branch: wtBranch,
+          cleanup_required: true,
+          created_at: event.timestamp,
+        });
+        this.activeRun.cleanup_debt.push({
+          id: `debt_wt_${Buffer.from(wtPath).toString("hex").slice(0, 8)}`,
+          type: "worktree",
+          path: wtPath,
+          description: `Git worktree at "${wtPath}"`,
+          resolved: false,
+        });
+        stateChanged = true;
+      }
+    } else if (event.tool === "exit_worktree" && event.type === "action_completed") {
+      const wtPath = (event.details?.worktree_path as string) || (event.target as string);
+      if (wtPath) {
+        const debt = this.activeRun.cleanup_debt.find(
+          (c) => c.type === "worktree" && c.path && path.resolve(c.path) === path.resolve(wtPath)
+        );
+        if (debt && !debt.resolved) {
+          debt.resolved = true;
+          debt.resolved_at = new Date().toISOString();
+          stateChanged = true;
+        }
+      }
+    }
+
+    if (stateChanged) {
+      const runDir = getRunDirPath(this.activeRun.run_id);
+      const resSnapshot = {
+        browser_sessions: [...this.activeRun.browser_sessions],
+        process_sessions: [...this.activeRun.process_sessions],
+        temporary_files: [...this.activeRun.temporary_files],
+        worktrees: [...this.activeRun.worktrees],
+        cleanup_debt: [...this.activeRun.cleanup_debt],
+      };
+      const runSnapshot = { ...this.activeRun };
+      this.queueWrite(async () => {
+        await atomicWriteJson(path.join(runDir, "resources.json"), resSnapshot).catch(() => {});
+        await atomicWriteJson(path.join(runDir, "run.json"), runSnapshot).catch(() => {});
+      });
     }
   }
 
@@ -338,11 +834,15 @@ export class RunManager {
       const pointer: ActiveRunPointer = {
         run_id: targetId,
         status: runData.status,
+        project_key: runData.project_key,
+        task_key: runData.task_key,
         last_checkpoint: now,
         workspace: runData.workspace,
         started_at: runData.started_at,
         updated_at: now,
         server_pid: process.pid,
+        server_instance_id: this.serverInstanceId,
+        heartbeat_at: now,
       };
       await atomicWriteJson(getActiveRunPath(), pointer);
     }
@@ -371,12 +871,18 @@ export class RunManager {
   /**
    * Track temporary files and add to cleanup debt.
    */
-  public async trackTemporaryFile(filePath: string, purpose?: string, cleanupRequired = true): Promise<void> {
+  public async trackTemporaryFile(
+    filePath: string,
+    purpose?: string,
+    cleanupRequired = true,
+    role: "temporary_test" | "user_output" | "persistent_project_file" = "temporary_test"
+  ): Promise<void> {
     if (!this.activeRun) return;
     const now = new Date().toISOString();
     const tempFile: TrackedTemporaryFile = {
       path: filePath,
       purpose,
+      role,
       cleanup_required: cleanupRequired,
       created_at: now,
     };
@@ -410,18 +916,30 @@ export class RunManager {
   public async resolveCleanupDebt(idOrPath: string): Promise<void> {
     if (!this.activeRun) return;
     const item = this.activeRun.cleanup_debt.find(
-      (c) => c.id === idOrPath || c.path === idOrPath || c.resource_id === idOrPath
+      (c) =>
+        c.id === idOrPath ||
+        c.path === idOrPath ||
+        c.resource_id === idOrPath ||
+        (c.path && path.resolve(c.path) === path.resolve(idOrPath))
     );
     if (item) {
       item.resolved = true;
       item.resolved_at = new Date().toISOString();
       const runDir = getRunDirPath(this.activeRun.run_id);
       await atomicWriteJson(path.join(runDir, "run.json"), this.activeRun);
+      await atomicWriteJson(path.join(runDir, "resources.json"), {
+        browser_sessions: this.activeRun.browser_sessions,
+        process_sessions: this.activeRun.process_sessions,
+        temporary_files: this.activeRun.temporary_files,
+        worktrees: this.activeRun.worktrees,
+        cleanup_debt: this.activeRun.cleanup_debt,
+      });
     }
   }
 
   /**
-   * Reconcile real system state and resume run context.
+   * Reconcile real system state, persist verified updates to run.json/resources.json,
+   * and resume run context.
    */
   public async resumeRun(runId?: string): Promise<RunResumeResult> {
     await this.init();
@@ -441,7 +959,9 @@ export class RunManager {
       // If still none, find most recent incomplete or latest run
       if (!targetId) {
         const runs = await this.listRuns({ limit: 10 });
-        const incomplete = runs.find((r) => r.status === "interrupted" || r.status === "running");
+        const incomplete = runs.find(
+          (r) => r.status === "interrupted" || r.status === "running" || r.status === "needs_cleanup"
+        );
         targetId = incomplete ? incomplete.run_id : runs[0]?.run_id;
       }
     }
@@ -505,17 +1025,18 @@ export class RunManager {
       }
     } catch {}
 
-    // Reconciliation 3: Check live browser sessions in memory
+    // Reconciliation 3: Check live browser sessions in memory & update persisted state
     const liveBrowserSessions = browserManager.listSessions();
     const aliveBrowserIds = liveBrowserSessions.map((s) => s.id);
     for (const bs of run.browser_sessions) {
       if (!aliveBrowserIds.includes(bs.id)) {
         bs.active = false;
+        bs.status = "closed";
         warnings.push(`Browser session "${bs.id}" was active when interrupted but is no longer open.`);
       }
     }
 
-    // Reconciliation 4: Check live process sessions
+    // Reconciliation 4: Check live process sessions & update persisted state
     const liveProcessSessions = processManager.listSessions();
     const aliveProcessIds = liveProcessSessions.filter((s) => s.status === "running").map((s) => s.id);
     for (const ps of run.process_sessions) {
@@ -532,30 +1053,44 @@ export class RunManager {
     // Update status to running now that it has been resumed
     run.status = "running";
     run.updated_at = new Date().toISOString();
+
+    // CRITICAL: Persist reconciled state to run.json and resources.json immediately
     await atomicWriteJson(runJsonPath, run);
+    await atomicWriteJson(path.join(runDir, "resources.json"), {
+      browser_sessions: run.browser_sessions,
+      process_sessions: run.process_sessions,
+      temporary_files: run.temporary_files,
+      worktrees: run.worktrees,
+      cleanup_debt: run.cleanup_debt,
+    });
+    await atomicWriteFile(path.join(runDir, "summary.md"), generateRunSummaryMarkdown(run));
 
     // Update active pointer
     await atomicWriteJson(getActiveRunPath(), {
       run_id: run.run_id,
       status: "running",
+      project_key: run.project_key,
+      task_key: run.task_key,
       last_checkpoint: run.last_checkpoint?.timestamp || run.updated_at,
       workspace: run.workspace,
       started_at: run.started_at,
       updated_at: run.updated_at,
       server_pid: process.pid,
+      server_instance_id: this.serverInstanceId,
+      heartbeat_at: run.updated_at,
     });
 
     activityStream.emit({
       type: "action_started",
       title: `Resumed durable run: ${run.run_id}`,
-      display_title: `Run resumed: ${run.run_id}`,
+      display_title: `Run resumed: [${run.task_key || run.run_id}]`,
       purpose: "Recover execution context and continue outstanding work",
       status: "running",
-      details: { run_id: run.run_id, original_goal: run.original_goal },
+      details: { run_id: run.run_id, original_goal: run.original_goal, project_key: run.project_key, task_key: run.task_key },
     });
 
     const instruction =
-      `RESUMED RUN ${run.run_id}. ` +
+      `RESUMED RUN ${run.run_id} (Task: ${run.task_key || "default"}). ` +
       `Original Goal: "${run.original_goal}". ` +
       `Completed work: [${run.completed_steps.join(", ")}]. ` +
       (inProgress ? `Interrupted during: "${inProgress}". Verify state before retrying. ` : "") +
@@ -565,6 +1100,8 @@ export class RunManager {
     return {
       recovered_run_id: run.run_id,
       status: run.status,
+      project_key: run.project_key,
+      task_key: run.task_key,
       original_goal: run.original_goal,
       current_goal: run.current_goal || run.original_goal,
       workspace: run.workspace,
@@ -596,19 +1133,21 @@ export class RunManager {
   }
 
   /**
-   * Complete a run and audit cleanup debt.
+   * Complete a run and audit cleanup debt and pending steps.
    */
   public async completeRun(
     runId?: string,
     options?: {
       status?: "completed" | "failed" | "abandoned";
       notes?: string;
+      resolve_pending?: boolean;
     }
   ): Promise<{
     run: RunMetadata;
     status: RunStatus;
     cleanup_warnings: string[];
     is_clean: boolean;
+    error_code?: string;
   }> {
     await this.init();
     const targetId = runId || this.activeRun?.run_id;
@@ -623,8 +1162,34 @@ export class RunManager {
     }
 
     const run: RunMetadata = JSON.parse(await fsp.readFile(runJsonPath, "utf-8"));
-    const finalStatus: RunStatus = options?.status || "completed";
+    const requestedStatus = options?.status || "completed";
     const now = new Date().toISOString();
+
+    // Guard: Prevent completing if pending steps remain (unless explicitly overridden)
+    if (requestedStatus === "completed" && run.pending_steps.length > 0) {
+      if (!options?.resolve_pending) {
+        return {
+          run,
+          status: run.status,
+          cleanup_warnings: [
+            `RUN_HAS_PENDING_STEPS: Run cannot be marked completed while ${run.pending_steps.length} pending step(s) remain: [${run.pending_steps.join(", ")}]. Complete or remove pending steps, or set resolve_pending: true.`,
+          ],
+          is_clean: false,
+          error_code: "RUN_HAS_PENDING_STEPS",
+        };
+      } else {
+        // Automatically resolve pending steps
+        for (const pending of run.pending_steps) {
+          run.completed_steps.push(`[Resolved on completion] ${pending}`);
+        }
+        run.pending_steps = [];
+      }
+    }
+
+    // Clear current action in flight
+    run.current_action = undefined;
+    run.current_purpose = undefined;
+    run.current_target = undefined;
 
     const cleanupWarnings: string[] = [];
 
@@ -646,6 +1211,12 @@ export class RunManager {
     const activeProcesses = processManager.listSessions().filter((p) => p.status === "running");
     if (activeProcesses.length > 0) {
       cleanupWarnings.push(`${activeProcesses.length} background process(es) still running.`);
+    }
+
+    // If unresolved debt remains and requested status was "completed", mark as "needs_cleanup"
+    let finalStatus: RunStatus = requestedStatus;
+    if (requestedStatus === "completed" && (unresolvedDebt.length > 0 || cleanupWarnings.length > 0)) {
+      finalStatus = "needs_cleanup";
     }
 
     run.status = finalStatus;
@@ -683,7 +1254,7 @@ export class RunManager {
     activityStream.emit({
       type: "action_completed",
       title: `Run ${finalStatus}: ${targetId}`,
-      display_title: `Run ${finalStatus}`,
+      display_title: `Run ${finalStatus} [${run.task_key || targetId}]`,
       status: finalStatus === "completed" ? "completed" : "failed",
       evidence: { cleanup_warnings: cleanupWarnings, final_status: finalStatus },
     });
@@ -705,6 +1276,8 @@ export class RunManager {
   }): Promise<
     Array<{
       run_id: string;
+      project_key?: string;
+      task_key?: string;
       goal: string;
       status: RunStatus;
       workspace: string;
@@ -721,6 +1294,8 @@ export class RunManager {
     const entries = await fsp.readdir(runsDir, { withFileTypes: true });
     const results: Array<{
       run_id: string;
+      project_key?: string;
+      task_key?: string;
       goal: string;
       status: RunStatus;
       workspace: string;
@@ -740,6 +1315,8 @@ export class RunManager {
             if (!options?.status || r.status === options.status) {
               results.push({
                 run_id: r.run_id,
+                project_key: r.project_key,
+                task_key: r.task_key,
                 goal: r.original_goal,
                 status: r.status,
                 workspace: r.workspace,
