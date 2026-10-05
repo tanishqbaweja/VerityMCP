@@ -90,7 +90,7 @@ export class BrowserManager {
     const browser = await this.ensureBrowser();
     const context = await browser.newContext({
       viewport: { width: 1280, height: 800 },
-      userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) DevSpace/4.0 AutomatedAgent",
+      userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) VerityMCP/1.0 AutomatedAgent",
     });
 
     const page = await context.newPage();

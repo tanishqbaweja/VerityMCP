@@ -1,7 +1,7 @@
 import { randomBytes, timingSafeEqual } from "node:crypto";
 import type { Request, Response, NextFunction } from "express";
 import express from "express";
-import type { DevSpaceConfig } from "../types/index.js";
+import type { VerityConfig } from "../types/index.js";
 
 interface RegisteredClient {
   clientId: string;
@@ -31,7 +31,7 @@ export class OAuthProvider {
   private codes = new Map<string, AuthCode>();
   private tokens = new Map<string, AccessToken>();
 
-  constructor(private config: DevSpaceConfig) {}
+  constructor(private config: VerityConfig) {}
 
   private safeCompare(a: string, b: string): boolean {
     const bufA = Buffer.from(a);
@@ -62,8 +62,8 @@ export class OAuthProvider {
     return {
       resource: resourceUrl,
       authorization_servers: [baseUrl],
-      scopes_supported: ["devspace"],
-      resource_name: "DevSpace 4.0 MCP Server",
+      scopes_supported: ["verity"],
+      resource_name: "VerityMCP Server",
     };
   }
 
@@ -77,7 +77,7 @@ export class OAuthProvider {
       grant_types_supported: ["authorization_code", "refresh_token"],
       code_challenge_methods_supported: ["S256", "plain"],
       token_endpoint_auth_methods_supported: ["none", "client_secret_post"],
-      scopes_supported: ["devspace"],
+      scopes_supported: ["verity"],
     };
   }
 
@@ -228,7 +228,7 @@ export class OAuthProvider {
           access_token: token,
           token_type: "Bearer",
           expires_in: expiresIn,
-          scope: "devspace",
+          scope: "verity",
         });
         return;
       }

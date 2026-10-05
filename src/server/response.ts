@@ -22,9 +22,9 @@ export function formatMcpResponse<T = unknown>(
   const lines: string[] = [];
 
   if (res.success) {
-    lines.push(`[DevSpace 4.0] SUCCESS: ${res.action}`);
+    lines.push(`[VerityMCP] SUCCESS: ${res.action}`);
   } else {
-    lines.push(`[DevSpace 4.0] FAILED: ${res.action}`);
+    lines.push(`[VerityMCP] FAILED: ${res.action}`);
   }
 
   if (res.text) {

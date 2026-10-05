@@ -46,7 +46,7 @@ export async function discoverSkills(workspaceRoot: string): Promise<SkillInfo[]
     { dir: path.join(workspaceRoot, "skills"), source: "workspace" as const },
     // 2. Global directories
     { dir: path.join(os.homedir(), ".codex", "skills"), source: "global" as const },
-    { dir: path.join(os.homedir(), ".devspace", "skills"), source: "global" as const },
+    { dir: path.join(os.homedir(), ".verity", "skills"), source: "global" as const },
     { dir: path.join(os.homedir(), ".agents", "skills"), source: "global" as const },
   ];
 

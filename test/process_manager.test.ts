@@ -2,26 +2,26 @@ import { describe, it } from "node:test";
 import assert from "node:assert";
 import { ProcessManager } from "../src/shell/process_manager.js";
 
-describe("DevSpace 4.0 Process Runtime", () => {
+describe("VerityMCP Process Runtime", () => {
   it("executes a synchronous command and captures stdout", async () => {
     const pm = new ProcessManager();
     const res = await pm.execCommand({
-      command: 'echo "Hello DevSpace 4.0"',
+      command: 'echo "Hello VerityMCP"',
       cwd: process.cwd(),
       shell: "powershell",
     });
 
     assert.strictEqual(res.success, true);
     assert.strictEqual(res.exitCode, 0);
-    assert.ok(res.stdout?.includes("Hello DevSpace 4.0"));
+    assert.ok(res.stdout?.includes("Hello VerityMCP"));
     assert.strictEqual(res.verification.passed, true);
   });
 
-  it("PREVENTS DevSpace 3.0 background task empty output bug", async () => {
+  it("captures background task output reliably", async () => {
     const pm = new ProcessManager();
     // Run background command in powershell that produces output
     const res = await pm.execCommand({
-      command: 'Write-Output "DevSpace 4.0 Background Output Test"; Start-Sleep -Milliseconds 100',
+      command: 'Write-Output "VerityMCP Background Output Test"; Start-Sleep -Milliseconds 100',
       cwd: process.cwd(),
       shell: "powershell",
       runInBackground: true,
@@ -38,9 +38,9 @@ describe("DevSpace 4.0 Process Runtime", () => {
     // Read process output
     const readRes = pm.readProcessOutput(sessionId, 0);
     assert.strictEqual(readRes.success, true);
-    // DevSpace 3.0 returned "" here! DevSpace 4.0 MUST capture durable output!
+    // VerityMCP captures durable output reliably
     assert.ok(
-      readRes.stdout.includes("DevSpace 4.0 Background Output Test"),
+      readRes.stdout.includes("VerityMCP Background Output Test"),
       `Expected output to contain test string, but got: "${readRes.stdout}"`
     );
     assert.strictEqual(readRes.data?.isComplete, true);

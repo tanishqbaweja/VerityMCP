@@ -601,7 +601,7 @@ export async function executePdf(
 ): Promise<StandardToolResponse<{ filePath: string; sizeBytes: number }>> {
   const startTime = Date.now();
   const page = browserManager.getActivePage(session);
-  const targetPath = outputPath || path.join(os.tmpdir(), `devspace4_doc_${randomUUID().slice(0, 8)}.pdf`);
+  const targetPath = outputPath || path.join(os.tmpdir(), `verity_doc_${randomUUID().slice(0, 8)}.pdf`);
   try {
     await page.pdf({ path: targetPath, format: "A4" });
     const stat = await fs.stat(targetPath);

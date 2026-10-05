@@ -15,8 +15,13 @@ interface BenchmarkResult {
   details: string;
 }
 
-const auth = JSON.parse(readFileSync("C:/Users/slato/.devspace/auth.json", "utf8"));
-const token = auth.ownerToken;
+import os from "node:os";
+
+const authCandidate = path.join(os.homedir(), ".verity", "auth.json");
+const auth = existsSync(authCandidate)
+  ? JSON.parse(readFileSync(authCandidate, "utf8"))
+  : { ownerToken: process.env.VERITY_OWNER_TOKEN || "test-token" };
+const token = auth.ownerToken || "test-token";
 
 function parseMcpPayload(text: string): any {
   const match = text.match(/data:\s*({.*})/);
@@ -70,9 +75,9 @@ function resetBenchmarkFiles(dir: string) {
 export async function runBenchmarks() {
   const results: BenchmarkResult[] = [];
   const servers = [
-    { name: "DevSpace 2.0", port: 7878 },
-    { name: "DevSpace 3.0", port: 7979 },
-    { name: "DevSpace 4.0", port: 7980 },
+    { name: "VerityMCP 2.0", port: 7878 },
+    { name: "VerityMCP 3.0", port: 7979 },
+    { name: "VerityMCP", port: 7980 },
   ];
 
   for (const s of servers) {
@@ -181,7 +186,7 @@ export async function runBenchmarks() {
           falseSuccess: false,
           durationMs: 0,
           correctness: "0%",
-          details: "Tool get_outline not present in DevSpace 3.0",
+          details: "Tool get_outline not present in VerityMCP 3.0",
         });
         console.log(`[Task D] Structural outline: UNSUPPORTED`);
       }
@@ -223,7 +228,7 @@ export async function runBenchmarks() {
           falseSuccess: false,
           durationMs: 0,
           correctness: "0%",
-          details: s.port === 7878 ? "Not supported in DevSpace 2.0" : "Large token dump in DevSpace 3.0",
+          details: s.port === 7878 ? "Not supported in VerityMCP 2.0" : "Large token dump in VerityMCP 3.0",
         });
         console.log(`[Task E] LSP Navigation: ${s.port === 7878 ? "UNSUPPORTED" : "WORKAROUND"}`);
       }
@@ -267,13 +272,13 @@ export async function runBenchmarks() {
           falseSuccess: false,
           durationMs: 0,
           correctness: "0%",
-          details: "Not natively supported in DevSpace 2.0 (only write_file / apply_patch)",
+          details: "Not natively supported in VerityMCP 2.0 (only write_file / apply_patch)",
         });
         console.log(`[Task F] Exact edit: UNSUPPORTED`);
       }
     }
 
-    // G. Patch existing file with UNMATCHED hunk (The DevSpace 2.0 defect probe)
+    // G. Patch existing file with UNMATCHED hunk (The VerityMCP 2.0 defect probe)
     {
       if (s.port === 7878 || s.port === 7980) {
         const invalidPatch = `*** Begin Patch\n*** Update File: README.md\n@@ -99,3 +99,3 @@\n-NON_EXISTENT_CONTENT_HERE\n+REPLACED_CONTENT\n*** End Patch`;
@@ -316,9 +321,9 @@ export async function runBenchmarks() {
           falseSuccess: false,
           durationMs: 0,
           correctness: "N/A",
-          details: "DevSpace 3.0 uses Edit instead of apply_patch",
+          details: "VerityMCP 3.0 uses Edit instead of apply_patch",
         });
-        console.log(`[Task G] Patch existing file: N/A (DevSpace 3.0 uses Edit)`);
+        console.log(`[Task G] Patch existing file: N/A (VerityMCP 3.0 uses Edit)`);
       }
     }
 
@@ -371,11 +376,11 @@ export async function runBenchmarks() {
     {
       const toolName = s.port === 7979 ? "PowerShell" : "exec_command";
       const args = s.port === 7979
-        ? { command: "Write-Output 'DevSpace Benchmark Running'" }
-        : { command: "Write-Output 'DevSpace Benchmark Running'", shell: "powershell" };
+        ? { command: "Write-Output 'VerityMCP Benchmark Running'" }
+        : { command: "Write-Output 'VerityMCP Benchmark Running'", shell: "powershell" };
       const { res, durationMs } = await callTool(s.port, toolName, args);
       const text = res?.result?.content?.[0]?.text || "";
-      const success = text.includes("DevSpace Benchmark Running");
+      const success = text.includes("VerityMCP Benchmark Running");
       results.push({
         server: s.name,
         port: s.port,
@@ -392,7 +397,7 @@ export async function runBenchmarks() {
       console.log(`[Task K] Command execution: ${success ? "PASS" : "FAIL"} (${durationMs}ms)`);
     }
 
-    // L & M. Long-running process & background output (DevSpace 3.0 output loss probe)
+    // L & M. Long-running process & background output (VerityMCP 3.0 output loss probe)
     {
       if (s.port === 7980) {
         const { res, durationMs } = await callTool(s.port, "exec_command", {
@@ -452,7 +457,7 @@ export async function runBenchmarks() {
           falseSuccess: false,
           durationMs: 300,
           correctness: "100%",
-          details: "DevSpace 2.0 process sessions capture stdout reliably",
+          details: "VerityMCP 2.0 process sessions capture stdout reliably",
         });
         console.log(`[Task L&M] Process output: PASS`);
       } else {
@@ -467,9 +472,9 @@ export async function runBenchmarks() {
           falseSuccess: false,
           durationMs: 800,
           correctness: "OUTPUT DROPPED DEFECT",
-          details: "DevSpace 3.0 background task dropped stdout during async yield",
+          details: "VerityMCP 3.0 background task dropped stdout during async yield",
         });
-        console.log(`[Task L&M] Background output: FAIL (DevSpace 3.0 Output Dropped Defect)`);
+        console.log(`[Task L&M] Background output: FAIL (VerityMCP 3.0 Output Dropped Defect)`);
       }
     }
 
@@ -528,7 +533,7 @@ export async function runBenchmarks() {
           falseSuccess: false,
           durationMs: 0,
           correctness: "0%",
-          details: "No first-class browser automation tools; Playwright CLI failed through DevSpace 3.0 path",
+          details: "No first-class browser automation tools; Playwright CLI failed through VerityMCP 3.0 path",
         });
         console.log(`[Task N-T] Playwright & Visuals: UNSUPPORTED / BROKEN`);
       }
@@ -539,7 +544,7 @@ export async function runBenchmarks() {
   rmSync(benchDir, { recursive: true, force: true });
 
   console.log(`\n==================================================`);
-  console.log(`DEVSPACE COMPARATIVE BENCHMARK: FINAL RESULTS`);
+  console.log(`VerityMCP COMPARATIVE BENCHMARK: FINAL RESULTS`);
   console.log(`==================================================`);
   console.table(results.map((r) => ({
     Server: r.server,

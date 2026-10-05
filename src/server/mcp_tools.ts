@@ -1,6 +1,6 @@
 import { McpServer } from "@modelcontextprotocol/server";
 import { z } from "zod";
-import type { DevSpaceConfig } from "../types/index.js";
+import type { VerityConfig } from "../types/index.js";
 import { formatMcpResponse, type McpToolResponse } from "./response.js";
 import { workspaceManager } from "../workspace/workspace_manager.js";
 import { discoverSkills, readSkillContent } from "../workspace/skills.js";
@@ -66,16 +66,16 @@ import { subagentEngine } from "../agents/subagent_engine.js";
 import { detectEnvironment } from "../environment/env_detector.js";
 import { observabilityManager } from "../observability/diagnostics.js";
 
-export function createDevSpace4McpServer(config: DevSpaceConfig): McpServer {
+export function createVerityMcpServer(config: VerityConfig): McpServer {
   const server = new McpServer(
     {
-      name: "devspace-4.0",
-      version: "4.0.0",
+      name: "verity-mcp",
+      version: "1.0.0",
     },
     {
-      instructions: `You are connected to DevSpace 4.0 on the user's local machine.
+      instructions: `You are connected to VerityMCP on the user's local machine.
 
-DevSpace 4.0 Core Philosophy:
+VerityMCP Core Philosophy:
 AN AGENT MUST BE ABLE TO TRUST ITS TOOLS.
 All filesystem mutations, patch applications, git reverts, process executions, browser interactions, and screenshots are verified against real system state before reporting success.`,
     }
@@ -1268,9 +1268,9 @@ All filesystem mutations, patch applications, git reverts, process executions, b
     }
   );
 
-  // 67. devspace_diagnostics
+  // 67. verity_diagnostics
   registerTool(
-    "devspace_diagnostics",
+    "verity_diagnostics",
     "Returns comprehensive health diagnostics, shell availability, browser status, and tool reliability audit logs.",
     {},
     async () => {

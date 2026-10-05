@@ -1,6 +1,6 @@
 [
   {
-    "server": "DevSpace 2.0",
+    "server": "VerityMCP 2.0",
     "port": 7878,
     "task": "A",
     "taskName": "Workspace bootstrap",
@@ -13,7 +13,7 @@
     "details": "Returned rich repo metadata and workspace context"
   },
   {
-    "server": "DevSpace 2.0",
+    "server": "VerityMCP 2.0",
     "port": 7878,
     "task": "B",
     "taskName": "File reading",
@@ -26,7 +26,7 @@
     "details": "Successfully read file lines"
   },
   {
-    "server": "DevSpace 2.0",
+    "server": "VerityMCP 2.0",
     "port": 7878,
     "task": "C",
     "taskName": "File search",
@@ -39,7 +39,7 @@
     "details": "Found pattern 'Greeter' in sample.ts"
   },
   {
-    "server": "DevSpace 2.0",
+    "server": "VerityMCP 2.0",
     "port": 7878,
     "task": "D",
     "taskName": "Structural outline",
@@ -52,7 +52,7 @@
     "details": "Extracted class and method outline concisely"
   },
   {
-    "server": "DevSpace 2.0",
+    "server": "VerityMCP 2.0",
     "port": 7878,
     "task": "E",
     "taskName": "LSP Navigation",
@@ -62,10 +62,10 @@
     "falseSuccess": false,
     "durationMs": 0,
     "correctness": "0%",
-    "details": "Not supported in DevSpace 2.0"
+    "details": "Not supported in VerityMCP 2.0"
   },
   {
-    "server": "DevSpace 2.0",
+    "server": "VerityMCP 2.0",
     "port": 7878,
     "task": "F",
     "taskName": "Exact edit",
@@ -75,10 +75,10 @@
     "falseSuccess": false,
     "durationMs": 0,
     "correctness": "0%",
-    "details": "Not natively supported in DevSpace 2.0 (only write_file / apply_patch)"
+    "details": "Not natively supported in VerityMCP 2.0 (only write_file / apply_patch)"
   },
   {
-    "server": "DevSpace 2.0",
+    "server": "VerityMCP 2.0",
     "port": 7878,
     "task": "G",
     "taskName": "Patch existing file (verification probe)",
@@ -91,7 +91,7 @@
     "details": "Server correctly rejected invalid patch and preserved file bytes"
   },
   {
-    "server": "DevSpace 2.0",
+    "server": "VerityMCP 2.0",
     "port": 7878,
     "task": "H",
     "taskName": "Patch new file",
@@ -104,7 +104,7 @@
     "details": "New file created on disk"
   },
   {
-    "server": "DevSpace 2.0",
+    "server": "VerityMCP 2.0",
     "port": 7878,
     "task": "K",
     "taskName": "Command execution",
@@ -117,7 +117,7 @@
     "details": "PowerShell executed with clean stdout capture"
   },
   {
-    "server": "DevSpace 2.0",
+    "server": "VerityMCP 2.0",
     "port": 7878,
     "task": "L & M",
     "taskName": "Long-running process & output",
@@ -127,10 +127,10 @@
     "falseSuccess": false,
     "durationMs": 300,
     "correctness": "100%",
-    "details": "DevSpace 2.0 process sessions capture stdout reliably"
+    "details": "VerityMCP 2.0 process sessions capture stdout reliably"
   },
   {
-    "server": "DevSpace 2.0",
+    "server": "VerityMCP 2.0",
     "port": 7878,
     "task": "N - T",
     "taskName": "Playwright browser automation & visuals",
@@ -143,7 +143,7 @@
     "details": "No native MCP base64 ImageContent payload (requires shell base64 workaround)"
   },
   {
-    "server": "DevSpace 3.0",
+    "server": "VerityMCP 3.0",
     "port": 7979,
     "task": "A",
     "taskName": "Workspace bootstrap",
@@ -156,7 +156,7 @@
     "details": "Returned rich repo metadata and workspace context"
   },
   {
-    "server": "DevSpace 3.0",
+    "server": "VerityMCP 3.0",
     "port": 7979,
     "task": "B",
     "taskName": "File reading",
@@ -169,7 +169,7 @@
     "details": "Successfully read file lines"
   },
   {
-    "server": "DevSpace 3.0",
+    "server": "VerityMCP 3.0",
     "port": 7979,
     "task": "C",
     "taskName": "File search",
@@ -182,7 +182,7 @@
     "details": "Search failed"
   },
   {
-    "server": "DevSpace 3.0",
+    "server": "VerityMCP 3.0",
     "port": 7979,
     "task": "D",
     "taskName": "Structural outline",
@@ -192,10 +192,10 @@
     "falseSuccess": false,
     "durationMs": 0,
     "correctness": "0%",
-    "details": "Tool get_outline not present in DevSpace 3.0"
+    "details": "Tool get_outline not present in VerityMCP 3.0"
   },
   {
-    "server": "DevSpace 3.0",
+    "server": "VerityMCP 3.0",
     "port": 7979,
     "task": "E",
     "taskName": "LSP Navigation",
@@ -205,10 +205,10 @@
     "falseSuccess": false,
     "durationMs": 0,
     "correctness": "0%",
-    "details": "Large token dump in DevSpace 3.0"
+    "details": "Large token dump in VerityMCP 3.0"
   },
   {
-    "server": "DevSpace 3.0",
+    "server": "VerityMCP 3.0",
     "port": 7979,
     "task": "F",
     "taskName": "Exact edit",
@@ -221,7 +221,7 @@
     "details": "Verified exact string replacement with unified diff"
   },
   {
-    "server": "DevSpace 3.0",
+    "server": "VerityMCP 3.0",
     "port": 7979,
     "task": "G",
     "taskName": "Patch existing file (verification probe)",
@@ -231,10 +231,10 @@
     "falseSuccess": false,
     "durationMs": 0,
     "correctness": "N/A",
-    "details": "DevSpace 3.0 uses Edit instead of apply_patch"
+    "details": "VerityMCP 3.0 uses Edit instead of apply_patch"
   },
   {
-    "server": "DevSpace 3.0",
+    "server": "VerityMCP 3.0",
     "port": 7979,
     "task": "H",
     "taskName": "Patch new file",
@@ -247,7 +247,7 @@
     "details": "New file created via Write"
   },
   {
-    "server": "DevSpace 3.0",
+    "server": "VerityMCP 3.0",
     "port": 7979,
     "task": "K",
     "taskName": "Command execution",
@@ -260,7 +260,7 @@
     "details": "PowerShell executed with clean stdout capture"
   },
   {
-    "server": "DevSpace 3.0",
+    "server": "VerityMCP 3.0",
     "port": 7979,
     "task": "L & M",
     "taskName": "Long-running process & output",
@@ -270,10 +270,10 @@
     "falseSuccess": false,
     "durationMs": 800,
     "correctness": "OUTPUT DROPPED DEFECT",
-    "details": "DevSpace 3.0 background task dropped stdout during async yield"
+    "details": "VerityMCP 3.0 background task dropped stdout during async yield"
   },
   {
-    "server": "DevSpace 3.0",
+    "server": "VerityMCP 3.0",
     "port": 7979,
     "task": "N - T",
     "taskName": "Playwright browser automation & visuals",
@@ -283,10 +283,10 @@
     "falseSuccess": false,
     "durationMs": 0,
     "correctness": "0%",
-    "details": "No first-class browser automation tools; Playwright CLI failed through DevSpace 3.0 path"
+    "details": "No first-class browser automation tools; Playwright CLI failed through VerityMCP 3.0 path"
   },
   {
-    "server": "DevSpace 4.0",
+    "server": "VerityMCP",
     "port": 7980,
     "task": "A",
     "taskName": "Workspace bootstrap",
@@ -299,7 +299,7 @@
     "details": "Returned rich repo metadata and workspace context"
   },
   {
-    "server": "DevSpace 4.0",
+    "server": "VerityMCP",
     "port": 7980,
     "task": "B",
     "taskName": "File reading",
@@ -312,7 +312,7 @@
     "details": "Successfully read file lines"
   },
   {
-    "server": "DevSpace 4.0",
+    "server": "VerityMCP",
     "port": 7980,
     "task": "C",
     "taskName": "File search",
@@ -325,7 +325,7 @@
     "details": "Found pattern 'Greeter' in sample.ts"
   },
   {
-    "server": "DevSpace 4.0",
+    "server": "VerityMCP",
     "port": 7980,
     "task": "D",
     "taskName": "Structural outline",
@@ -338,7 +338,7 @@
     "details": "Extracted class and method outline concisely"
   },
   {
-    "server": "DevSpace 4.0",
+    "server": "VerityMCP",
     "port": 7980,
     "task": "E",
     "taskName": "LSP Navigation",
@@ -351,7 +351,7 @@
     "details": "Extracted document symbols with concise outline verbosity"
   },
   {
-    "server": "DevSpace 4.0",
+    "server": "VerityMCP",
     "port": 7980,
     "task": "F",
     "taskName": "Exact edit",
@@ -364,7 +364,7 @@
     "details": "Verified exact string replacement with unified diff"
   },
   {
-    "server": "DevSpace 4.0",
+    "server": "VerityMCP",
     "port": 7980,
     "task": "G",
     "taskName": "Patch existing file (verification probe)",
@@ -377,7 +377,7 @@
     "details": "Server correctly rejected invalid patch and preserved file bytes"
   },
   {
-    "server": "DevSpace 4.0",
+    "server": "VerityMCP",
     "port": 7980,
     "task": "H",
     "taskName": "Patch new file",
@@ -390,7 +390,7 @@
     "details": "New file created on disk"
   },
   {
-    "server": "DevSpace 4.0",
+    "server": "VerityMCP",
     "port": 7980,
     "task": "K",
     "taskName": "Command execution",
@@ -403,7 +403,7 @@
     "details": "PowerShell executed with clean stdout capture"
   },
   {
-    "server": "DevSpace 4.0",
+    "server": "VerityMCP",
     "port": 7980,
     "task": "L & M",
     "taskName": "Long-running process & output",
@@ -416,7 +416,7 @@
     "details": "Synchronous run captured output"
   },
   {
-    "server": "DevSpace 4.0",
+    "server": "VerityMCP",
     "port": 7980,
     "task": "N - T",
     "taskName": "Playwright browser automation & visuals",

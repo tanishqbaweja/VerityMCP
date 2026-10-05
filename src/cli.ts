@@ -2,7 +2,7 @@
 import { createServer } from "node:http";
 import net from "node:net";
 import { loadConfig } from "./config/index.js";
-import { createDevSpaceApp } from "./server/app.js";
+import { createVerityApp } from "./server/app.js";
 import { workspaceManager } from "./workspace/workspace_manager.js";
 import { detectShells } from "./shell/shell_detector.js";
 
@@ -53,14 +53,14 @@ export async function main() {
 
   const effectivePort = await findAvailablePort(config.port, config.host);
   if (effectivePort !== config.port) {
-    console.warn(`[DevSpace 4.0] Warning: Port ${config.port} was busy. Auto-selected port ${effectivePort}.`);
+    console.warn(`[VerityMCP] Warning: Port ${config.port} was busy. Auto-selected port ${effectivePort}.`);
     config.port = effectivePort;
   }
 
   // Auto-open workspace for current working directory
   await workspaceManager.openWorkspace(process.cwd(), config.allowedRoots);
 
-  const instance = createDevSpaceApp(config);
+  const instance = createVerityApp(config);
   const shells = detectShells();
 
   const server = createServer(instance.app);
@@ -80,7 +80,7 @@ Health Check:   http://${config.host}:${config.port}/healthz
 Default Shell:  ${shells.defaultShell} (${shells.powershell.available ? "PowerShell" : "cmd"})
 Git Bash:       ${shells.gitBash.available ? shells.gitBash.description : "Not detected"}
 Active Root:    ${workspaceManager.getActiveWorkspaceRoot()}
-Auth Token:     ${config.ownerToken ? "(Configured via ~/.devspace/auth.json)" : "(None - public access)"}
+Auth Token:     ${config.ownerToken ? "(Configured via ~/.verity/auth.json)" : "(None - public access)"}
 ============================================================
 `);
   });
@@ -89,7 +89,7 @@ Auth Token:     ${config.ownerToken ? "(Configured via ~/.devspace/auth.json)" :
 // If executed directly
 if (process.argv[1] && process.argv[1].endsWith("cli.ts") || process.argv[1]?.endsWith("cli.js")) {
   main().catch((err) => {
-    console.error("[DevSpace 4.0] Fatal startup error:", err);
+    console.error("[VerityMCP] Fatal startup error:", err);
     process.exit(1);
   });
 }

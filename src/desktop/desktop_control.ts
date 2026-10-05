@@ -27,7 +27,7 @@ export async function executeDesktopScreenshot(
   const startTime = Date.now();
   const targetPath =
     options?.outputPath ||
-    path.join(os.tmpdir(), `devspace4_desktop_${randomUUID().slice(0, 8)}.png`);
+    path.join(os.tmpdir(), `verity_desktop_${randomUUID().slice(0, 8)}.png`);
 
   await fs.mkdir(path.dirname(targetPath), { recursive: true });
 

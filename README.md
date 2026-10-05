@@ -204,7 +204,7 @@ VerityMCP exposes a unified, production-ready tool surface organized across 12 e
 - `enter_plan_mode` / `exit_plan_mode`: Toggles execution mode boundaries.
 
 ### 11. System Diagnostics & Observability
-- `devspace_diagnostics`: Returns system health, available shells, browser status, and tool reliability audit logs.
+- `verity_diagnostics`: Returns system health, available shells, browser status, and tool reliability audit logs.
 
 ---
 
@@ -217,11 +217,11 @@ VerityMCP exposes a unified, production-ready tool surface organized across 12 e
 4. Configure:
    - **URL**: `https://<subdomain>.trycloudflare.com/mcp`
    - **Authentication**: Bearer Token
-   - **Token**: Copy from your VerityMCP console or `~/.devspace/auth.json`.
+   - **Token**: Copy from your VerityMCP console or `~/.verity/auth.json`.
 
 ### 2. Local IDE & Agent Setup
 To run VerityMCP locally with standard MCP clients:
-- **Command**: `node "H:/Github Repositories/devspace 4.0/dist/cli.js" serve --port 7980`
+- **Command**: `node dist/cli.js serve --port 7980`
 - **HTTP / SSE Endpoint**: `http://127.0.0.1:7980/mcp`
 
 ---
