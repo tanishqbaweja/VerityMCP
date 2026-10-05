@@ -57,56 +57,72 @@ export class OAuthProvider {
     return false;
   }
 
-  public getProtectedResourceMetadata(baseUrl: string) {
-    const resourceUrl = `${baseUrl}/mcp`;
+  public getProtectedResourceMetadata(baseUrl: string, reqUrl?: string) {
+    const isMcpSubpath = reqUrl && reqUrl.includes("/mcp");
+    const resourceUrl = isMcpSubpath ? `${baseUrl}/mcp` : baseUrl;
     return {
       resource: resourceUrl,
       authorization_servers: [baseUrl],
-      scopes_supported: ["verity"],
+      scopes_supported: ["verity", "offline_access"],
       resource_name: "VerityMCP Server",
+      resource_documentation: "https://github.com/tanishqbaweja/VerityMCP",
     };
   }
 
   public getAuthServerMetadata(baseUrl: string) {
     return {
       issuer: baseUrl,
+      authorization_response_iss_parameter_supported: true,
       authorization_endpoint: `${baseUrl}/oauth/authorize`,
       token_endpoint: `${baseUrl}/oauth/token`,
       registration_endpoint: `${baseUrl}/oauth/register`,
       response_types_supported: ["code"],
       grant_types_supported: ["authorization_code", "refresh_token"],
       code_challenge_methods_supported: ["S256", "plain"],
-      token_endpoint_auth_methods_supported: ["none", "client_secret_post"],
-      scopes_supported: ["verity"],
+      token_endpoint_auth_methods_supported: ["none", "client_secret_post", "client_secret_basic"],
+      scopes_supported: ["verity", "offline_access"],
     };
   }
 
   public createRouter(getBaseUrl: () => string): express.Router {
     const router = express.Router();
 
-    // 1. Discovery Routes
+    // 1. Discovery Routes (RFC 8414, RFC 9728, OpenID Connect Discovery)
     const handleAuthServerMeta = (_req: Request, res: Response) => {
       const baseUrl = getBaseUrl();
       res.setHeader("Content-Type", "application/json");
       res.setHeader("Access-Control-Allow-Origin", "*");
+      res.setHeader("Access-Control-Expose-Headers", "Authorization, WWW-Authenticate, Content-Type");
       res.json(this.getAuthServerMetadata(baseUrl));
     };
 
-    const handleProtectedResourceMeta = (_req: Request, res: Response) => {
+    const handleProtectedResourceMeta = (req: Request, res: Response) => {
       const baseUrl = getBaseUrl();
       res.setHeader("Content-Type", "application/json");
       res.setHeader("Access-Control-Allow-Origin", "*");
-      res.json(this.getProtectedResourceMetadata(baseUrl));
+      res.setHeader("Access-Control-Expose-Headers", "Authorization, WWW-Authenticate, Content-Type");
+      res.json(this.getProtectedResourceMetadata(baseUrl, req.originalUrl));
     };
 
+    // RFC 8414 OAuth 2.0 Authorization Server Metadata
     router.get("/.well-known/oauth-authorization-server", handleAuthServerMeta);
     router.get("/.well-known/oauth-authorization-server/mcp", handleAuthServerMeta);
+    router.get("/mcp/.well-known/oauth-authorization-server", handleAuthServerMeta);
+
+    // OpenID Connect Discovery (queried by ChatGPT and other OIDC/OAuth clients)
+    router.get("/.well-known/openid-configuration", handleAuthServerMeta);
+    router.get("/.well-known/openid-configuration/mcp", handleAuthServerMeta);
+    router.get("/mcp/.well-known/openid-configuration", handleAuthServerMeta);
+
+    // RFC 9728 OAuth 2.0 Protected Resource Metadata
     router.get("/.well-known/oauth-protected-resource", handleProtectedResourceMeta);
     router.get("/.well-known/oauth-protected-resource/mcp", handleProtectedResourceMeta);
+    router.get("/mcp/.well-known/oauth-protected-resource", handleProtectedResourceMeta);
 
     // 2. Dynamic Client Registration (RFC 7591)
     router.post("/oauth/register", (req: Request, res: Response) => {
       res.setHeader("Access-Control-Allow-Origin", "*");
+      res.setHeader("Access-Control-Expose-Headers", "Authorization, WWW-Authenticate, Content-Type");
       const body = req.body || {};
       const clientId = body.client_id || `chatgpt-client-${randomBytes(8).toString("hex")}`;
       const clientSecret = body.client_secret || `sec-${randomBytes(16).toString("hex")}`;
@@ -197,6 +213,7 @@ export class OAuthProvider {
       const redirectUrl = new URL(redirect_uri);
       redirectUrl.searchParams.set("code", code);
       if (state) redirectUrl.searchParams.set("state", state);
+      redirectUrl.searchParams.set("iss", getBaseUrl()); // RFC 9207 Issuer Identification
 
       res.redirect(302, redirectUrl.href);
     });
@@ -204,6 +221,7 @@ export class OAuthProvider {
     // 4. Token Endpoint
     router.post("/oauth/token", express.urlencoded({ extended: true }), express.json(), (req: Request, res: Response) => {
       res.setHeader("Access-Control-Allow-Origin", "*");
+      res.setHeader("Access-Control-Expose-Headers", "Authorization, WWW-Authenticate, Content-Type");
       const grantType = req.body.grant_type;
       const code = req.body.code;
 
@@ -217,6 +235,7 @@ export class OAuthProvider {
         this.codes.delete(code);
 
         const token = `mcp_${randomBytes(32).toString("hex")}`;
+        const refreshToken = `ref_${randomBytes(32).toString("hex")}`;
         const expiresIn = 3600 * 24 * 30; // 30 days
         this.tokens.set(token, {
           token,
@@ -227,8 +246,29 @@ export class OAuthProvider {
         res.json({
           access_token: token,
           token_type: "Bearer",
+          refresh_token: refreshToken,
           expires_in: expiresIn,
-          scope: "verity",
+          scope: "verity offline_access",
+        });
+        return;
+      }
+
+      if (grantType === "refresh_token") {
+        const token = `mcp_${randomBytes(32).toString("hex")}`;
+        const refreshToken = `ref_${randomBytes(32).toString("hex")}`;
+        const expiresIn = 3600 * 24 * 30; // 30 days
+        this.tokens.set(token, {
+          token,
+          clientId: "refreshed-client",
+          expiresAt: Date.now() + expiresIn * 1000,
+        });
+
+        res.json({
+          access_token: token,
+          token_type: "Bearer",
+          refresh_token: refreshToken,
+          expires_in: expiresIn,
+          scope: "verity offline_access",
         });
         return;
       }

@@ -39,12 +39,36 @@ export function createVerityApp(config: VerityConfig): VerityAppInstance {
       "Access-Control-Allow-Headers",
       "Authorization, Content-Type, Accept, mcp-session-id, x-requested-with"
     );
+    res.setHeader(
+      "Access-Control-Expose-Headers",
+      "Authorization, WWW-Authenticate, Content-Type"
+    );
     res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS, PUT, DELETE");
     if (req.method === "OPTIONS") {
       res.sendStatus(204);
       return;
     }
     next();
+  });
+
+  // Root info and discovery route
+  app.get("/", (req, res) => {
+    const baseUrl = resolveBaseUrl(req);
+    if (config.ownerToken && !req.headers.authorization) {
+      res.setHeader(
+        "WWW-Authenticate",
+        `Bearer resource_metadata="${baseUrl}/.well-known/oauth-protected-resource"`
+      );
+    }
+    res.json({
+      service: "VerityMCP",
+      status: "online",
+      version: "1.0.0",
+      mcp_endpoint: `${baseUrl}/mcp`,
+      health: `${baseUrl}/healthz`,
+      monitor: `${baseUrl}/monitor`,
+      workspace: workspaceManager.getActiveWorkspaceRoot(),
+    });
   });
 
   // Health check

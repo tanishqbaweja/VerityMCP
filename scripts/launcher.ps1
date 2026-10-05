@@ -79,9 +79,14 @@ if ($ownerToken) {
 Write-Host "==========================================================" -ForegroundColor Green
 Write-Host ""
 Write-Host "Next Steps in ChatGPT Web:" -ForegroundColor White
-Write-Host "1. Paste '$mcpUrl' into your MCP Client." -ForegroundColor White
-Write-Host "2. When prompted for authorization, enter the Owner Password above." -ForegroundColor White
-Write-Host "3. Start coding! VerityMCP provides verified actions, first-class browser automation, and 65 tools." -ForegroundColor White
+Write-Host "1. Paste '$mcpUrl' into your MCP / Custom Action Connector." -ForegroundColor White
+Write-Host "2. Authentication Options:" -ForegroundColor White
+Write-Host "   - Option A (Recommended - API Key):" -ForegroundColor Cyan
+Write-Host "     Select 'API Key' -> Type 'Bearer' -> Paste Owner Password: $ownerToken" -ForegroundColor Gray
+Write-Host "   - Option B (OAuth 2.1):" -ForegroundColor Cyan
+Write-Host "     Select 'OAuth' -> Endpoints are auto-discovered from $tunnelUrl" -ForegroundColor Gray
+Write-Host "     If manual: Auth URL = $tunnelUrl/oauth/authorize | Token URL = $tunnelUrl/oauth/token" -ForegroundColor Gray
+Write-Host "3. Start coding! VerityMCP provides verified actions, first-class browser automation, and 78 tools." -ForegroundColor White
 Write-Host ""
 Write-Host "Starting VerityMCP server..." -ForegroundColor Gray
 Write-Host ""
