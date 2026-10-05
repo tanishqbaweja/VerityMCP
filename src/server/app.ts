@@ -178,7 +178,7 @@ export function createVerityApp(config: VerityConfig): VerityAppInstance {
     }
   };
 
-  app.all("/mcp", authMiddleware, jsonParser, urlEncodedParser, handleMcpRequest);
+  app.all(["/mcp", "/mcp/"], authMiddleware, jsonParser, urlEncodedParser, handleMcpRequest);
   app.post("/", authMiddleware, jsonParser, urlEncodedParser, handleMcpRequest);
 
   return {
