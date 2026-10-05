@@ -33,7 +33,7 @@ export interface ToolAuditEntry {
 
 export interface SelfTestCheck {
   name: string;
-  subsystem: "filesystem" | "shell" | "git" | "process" | "browser" | "desktop";
+  subsystem: "filesystem" | "shell" | "git" | "process" | "browser" | "desktop" | "observability";
   passed: boolean;
   durationMs: number;
   details?: Record<string, unknown>;
@@ -56,14 +56,17 @@ class ObservabilityManager {
 
     if (!entry.success && !entry.category) {
       if (
+        entry.errorCode === "STALE_ELEMENT_REFERENCE" ||
         entry.errorCode === "WORKTREE_DIRTY" ||
         entry.errorCode === "FILE_CHANGED_SINCE_READ" ||
         entry.errorCode === "SECURITY_VIOLATION"
       ) {
         cat = "guarded_refusal";
+      } else if (entry.errorCode === "FILE_NOT_FOUND") {
+        cat = "operational_failure";
       } else if (
         entry.errorCode === "PATCH_VERIFICATION_FAILED" ||
-        entry.verificationPassed === false
+        (entry.verificationPassed === false && !entry.errorCode)
       ) {
         cat = "verification_failure";
       } else if (
@@ -593,6 +596,38 @@ class ObservabilityManager {
         subsystem: "browser",
         passed: false,
         durationMs: Date.now() - browserStart,
+        error: err.message,
+      });
+    }
+
+    // 5. Activity stream and operational monitor verification
+    const obsStart = Date.now();
+    try {
+      const testEvt = activityStream.emit({
+        type: "verification",
+        title: "Observability acceptance check",
+        purpose: "Validate live stream emission",
+      });
+      const readRes = activityStream.read({ cursor: testEvt.seq - 1 });
+      const passed = Boolean(
+        testEvt &&
+        readRes.events.some((e) => e.title === "Observability acceptance check")
+      );
+      checks.push({
+        name: "live_activity_stream",
+        subsystem: "observability",
+        passed,
+        durationMs: Date.now() - obsStart,
+        details: { totalRetained: activityStream.size() },
+        error: passed ? undefined : "Activity stream failed to record and retrieve verification event",
+      });
+      activityStream.emit({ type: "verification", title: "Live activity stream OK", tool: "verity_acceptance_test" });
+    } catch (err: any) {
+      checks.push({
+        name: "live_activity_stream",
+        subsystem: "observability",
+        passed: false,
+        durationMs: Date.now() - obsStart,
         error: err.message,
       });
     }

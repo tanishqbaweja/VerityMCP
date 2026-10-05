@@ -64,6 +64,10 @@ export interface StandardToolResponse<T = unknown> {
   call_id?: string;
   display_title?: string;
   display_status?: "running" | "verified" | "completed" | "failed" | "warning" | "blocked";
+  purpose?: string;
+  purpose_source?: "caller" | "tool_default";
+  expected_outcome?: string;
+  target?: Record<string, unknown> | string;
   within_workspace?: boolean;
   workspace_root?: string;
   resolved_path?: string;

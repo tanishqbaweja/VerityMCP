@@ -4,6 +4,7 @@ import os from "node:os";
 import { randomUUID } from "node:crypto";
 import { browserManager, type BrowserSession } from "./browser_manager.js";
 import { workspaceManager } from "../workspace/workspace_manager.js";
+import { activityStream } from "../observability/activity_stream.js";
 import { calculateSha256 } from "../verification/index.js";
 import type { StandardToolResponse } from "../types/index.js";
 
@@ -43,6 +44,17 @@ export async function executeBrowserScreenshot(
   const resolvedPath = outputPath
     ? (path.isAbsolute(outputPath) ? path.resolve(outputPath) : path.resolve(workspaceRoot, outputPath))
     : path.join(os.tmpdir(), `verity_screenshot_${randomUUID().slice(0, 8)}.png`);
+
+  activityStream.emit({
+    type: "action_started",
+    tool: "browser_screenshot",
+    title: "Capturing browser screenshot",
+    display_title: "Capturing browser screenshot",
+    purpose: "Visually confirm rendered state matches DOM state.",
+    target: { outputPath: requestedPath, session_id: session.id },
+    browser_session_id: session.id,
+    status: "running",
+  });
 
   let buffer: Buffer;
   try {
@@ -219,6 +231,22 @@ export async function executeBrowserScreenshot(
     `  SHA-256:        ${sha256}`,
     `[Verification: PASSED via disk_file_and_buffer_validation]`,
   ].join("\n");
+
+  activityStream.emit({
+    type: "verification",
+    tool: "browser_screenshot",
+    title: "Screenshot verified",
+    display_title: "Screenshot verified",
+    target: { resolvedPath },
+    evidence: {
+      dimensions: `${viewport.width}x${viewport.height}`,
+      bytes: diskBytes.length,
+      sha256,
+      visualPayloadAttached: true,
+    },
+    browser_session_id: session.id,
+    status: "verified",
+  });
 
   return {
     toolResponse: {
