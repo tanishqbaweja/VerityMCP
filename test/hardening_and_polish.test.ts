@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import crypto from "node:crypto";
+import { execSync } from "node:child_process";
 import { formatMcpResponse } from "../src/server/response.js";
 import { executeEditFile } from "../src/filesystem/edit_file.js";
 import { executeApplyPatch } from "../src/patcher/apply_patch.js";
@@ -21,6 +22,10 @@ import {
   executeGetNetwork,
 } from "../src/browser/actions.js";
 import { executeGitConflicts, executeGitStatus } from "../src/git/git_ops.js";
+import { executeEnterWorktree, executeExitWorktree } from "../src/git/worktrees.js";
+import { executeReadNotebook, executeEditNotebook } from "../src/notebook/notebook_engine.js";
+import { SubagentEngine } from "../src/agents/subagent_engine.js";
+import { workspaceManager } from "../src/workspace/workspace_manager.js";
 import { observabilityManager } from "../src/observability/diagnostics.js";
 
 describe("VerityMCP Polish & Hardening Acceptance Suite", () => {
@@ -356,6 +361,167 @@ describe("VerityMCP Polish & Hardening Acceptance Suite", () => {
     assert.ok(shellCheck?.passed);
     assert.ok(procCheck?.passed);
     assert.ok(browserCheck?.passed);
+  });
+
+  it("executes shell quoting torture tests across PowerShell, cmd, and Git Bash", async () => {
+    // 1. PowerShell with quotes and ampersand
+    const psRes = await processManager.execCommand({
+      command: 'Write-Output \'{"user": "verity", "message": "hello & goodbye"}\'',
+      shell: "powershell",
+    });
+    assert.strictEqual(psRes.success, true);
+    assert.ok(psRes.stdout?.includes("hello & goodbye"));
+
+    // 2. cmd with quotes, spaces, and ampersand
+    const cmdRes = await processManager.execCommand({
+      command: 'echo "path with spaces/file name.txt" & echo secondary_flag',
+      shell: "cmd",
+    });
+    assert.strictEqual(cmdRes.success, true);
+    assert.ok(cmdRes.stdout?.includes("secondary_flag"));
+
+    // 3. Git Bash with complex JSON string and spaces
+    const bashRes = await processManager.execCommand({
+      command: "echo '{\"status\": \"ok\", \"path\": \"folder with spaces/file.txt\"}'",
+      shell: "bash",
+    });
+    assert.strictEqual(bashRes.success, true);
+    assert.ok(bashRes.stdout?.includes("folder with spaces/file.txt"));
+  });
+
+  it("verifies worktree lifecycle and dirty-state removal protection with WORKTREE_DIRTY", async () => {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "verity-wt-suite-"));
+    execSync("git init", { cwd: tmpDir });
+    execSync('git config user.name "Tester"', { cwd: tmpDir });
+    execSync('git config user.email "test@test.com"', { cwd: tmpDir });
+    await fs.writeFile(path.join(tmpDir, "README.md"), "# Init", "utf-8");
+    execSync('git add . && git commit -m "Initial commit"', { cwd: tmpDir });
+
+    const openRes = await workspaceManager.openWorkspace(tmpDir, [tmpDir]);
+    assert.strictEqual(openRes.success, true);
+
+    // Enter worktree
+    const enterRes = await executeEnterWorktree({ name: "feature-isolate" });
+    assert.strictEqual(enterRes.success, true);
+    const wtPath = enterRes.data?.worktreePath!;
+    assert.ok(wtPath);
+
+    // Make worktree dirty
+    await fs.writeFile(path.join(wtPath, "uncommitted.txt"), "dirty state", "utf-8");
+
+    // Exit and remove without force: true -> must be rejected with WORKTREE_DIRTY
+    const dirtyRejectRes = await executeExitWorktree({ action: "remove", force: false });
+    assert.strictEqual(dirtyRejectRes.success, false);
+    assert.strictEqual(dirtyRejectRes.error_code, "WORKTREE_DIRTY");
+
+    // Exit and remove with force: true -> must succeed
+    const forceExitRes = await executeExitWorktree({ action: "remove", force: true });
+    assert.strictEqual(forceExitRes.success, true);
+
+    await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+  });
+
+  it("verifies Jupyter notebook inspection, insertion, replacement, and deletion with SHA-256 verification", async () => {
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "verity-nb-suite-"));
+    const nbPath = path.join(tmpDir, "pipeline.ipynb");
+
+    const sampleNb = {
+      nbformat: 4,
+      nbformat_minor: 5,
+      metadata: { language_info: { name: "python" } },
+      cells: [
+        {
+          id: "intro_cell",
+          cell_type: "markdown",
+          metadata: {},
+          source: ["# Pipeline Notebook\n", "Initial markdown text."]
+        },
+        {
+          id: "exec_cell",
+          cell_type: "code",
+          metadata: {},
+          execution_count: 1,
+          source: ["import os\n", "print(os.getcwd())"],
+          outputs: []
+        }
+      ]
+    };
+
+    await fs.writeFile(nbPath, JSON.stringify(sampleNb, null, 2), "utf-8");
+
+    // 1. Read notebook
+    const readRes = await executeReadNotebook({ workspaceRoot: tmpDir, notebookPath: "pipeline.ipynb" });
+    assert.strictEqual(readRes.success, true);
+    assert.strictEqual(readRes.data?.totalCells, 2);
+
+    // 2. Replace code cell
+    const replaceRes = await executeEditNotebook({
+      workspaceRoot: tmpDir,
+      notebookPath: "pipeline.ipynb",
+      cellId: "exec_cell",
+      editMode: "replace",
+      newSource: "import sys\nprint(sys.version)",
+    });
+    assert.strictEqual(replaceRes.success, true);
+    assert.strictEqual(replaceRes.verification.passed, true);
+
+    // 3. Insert markdown cell
+    const insertRes = await executeEditNotebook({
+      workspaceRoot: tmpDir,
+      notebookPath: "pipeline.ipynb",
+      editMode: "insert",
+      cellType: "markdown",
+      newSource: "### Section 2: Results",
+    });
+    assert.strictEqual(insertRes.success, true);
+    assert.strictEqual(insertRes.data?.totalCells, 3);
+
+    // 4. Delete cell
+    const deleteRes = await executeEditNotebook({
+      workspaceRoot: tmpDir,
+      notebookPath: "pipeline.ipynb",
+      cellId: "intro_cell",
+      editMode: "delete",
+      newSource: "",
+    });
+    assert.strictEqual(deleteRes.success, true);
+    assert.strictEqual(deleteRes.data?.totalCells, 2);
+
+    await fs.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
+  });
+
+  it("verifies subagent bounded execution, personas, and plan mode lifecycle", () => {
+    const engine = new SubagentEngine();
+
+    // Delegate explore
+    const exploreRes = engine.delegateSubagent("Explore module layout", "explore");
+    assert.strictEqual(exploreRes.success, true);
+    assert.strictEqual(exploreRes.data?.persona, "explore");
+    assert.strictEqual(exploreRes.data?.status, "completed");
+
+    // Delegate coding
+    const codingRes = engine.delegateSubagent("Implement parser feature", "coding");
+    assert.strictEqual(codingRes.success, true);
+    assert.strictEqual(codingRes.data?.persona, "coding");
+
+    // Delegate review
+    const reviewRes = engine.delegateSubagent("Review diffs for safety", "review");
+    assert.strictEqual(reviewRes.success, true);
+
+    // List sessions
+    const listRes = engine.listSubagents();
+    assert.strictEqual(listRes.success, true);
+    assert.strictEqual(listRes.data?.length, 3);
+
+    // Plan mode toggle and exit
+    const enterPlan = engine.enterPlanMode();
+    assert.strictEqual(enterPlan.success, true);
+    assert.strictEqual(enterPlan.data?.active, true);
+
+    const exitPlan = engine.exitPlanMode("Refactored plan", ["step 1", "step 2"]);
+    assert.strictEqual(exitPlan.success, true);
+    assert.strictEqual(exitPlan.data?.active, false);
+    assert.strictEqual(exitPlan.data?.activePlan, "Refactored plan");
   });
 
   after(async () => {
