@@ -2183,13 +2183,21 @@ DURABLE EXECUTION & RECOVERY INSTRUCTIONS:
       const runs = await runManager.listRuns({ status: filterStatus, limit });
       const textLines = [
         `Persisted Runs (${runs.length}):`,
-        ...runs.map((r) => `  [${r.status.toUpperCase()}] ${r.run_id} | ${r.goal.slice(0, 50)} | Workspace: ${r.workspace} | Updated: ${r.updated_at}`),
+        ...runs.map((r) => [
+          `[${r.status.toUpperCase()}] ${r.run_id}`,
+          `  Project: ${r.project_key || "none"}`,
+          `  Task: ${r.task_key || "none"}`,
+          `  Workspace: ${r.workspace}`,
+          `  Goal: ${r.goal.slice(0, 80)}`,
+          `  Phase: ${r.current_phase || r.last_action || "none"}`,
+          `  Updated: ${r.updated_at}`,
+        ].join("\n")),
       ];
       return formatMcpResponse({
         success: true,
         action: "list_runs",
         display_title: "Persisted runs list",
-        text: runs.length > 0 ? textLines.join("\n") : "No persisted runs found.",
+        text: runs.length > 0 ? textLines.join("\n\n") : "No persisted runs found.",
         summary: `Found ${runs.length} persisted run(s)`,
         data: { runs },
         verification: { performed: true, passed: true, method: "run_journal_listing" },

@@ -1284,6 +1284,7 @@ export class RunManager {
       started_at: string;
       updated_at: string;
       last_action?: string;
+      current_phase?: string;
       completed_steps_count: number;
     }>
   > {
@@ -1302,6 +1303,7 @@ export class RunManager {
       started_at: string;
       updated_at: string;
       last_action?: string;
+      current_phase?: string;
       completed_steps_count: number;
     }> = [];
 
@@ -1313,6 +1315,7 @@ export class RunManager {
             const raw = await fsp.readFile(runJsonPath, "utf-8");
             const r: RunMetadata = JSON.parse(raw);
             if (!options?.status || r.status === options.status) {
+              const activePhase = r.phases?.find((p) => p.status === "in_progress")?.title || r.phases?.[0]?.title;
               results.push({
                 run_id: r.run_id,
                 project_key: r.project_key,
@@ -1323,6 +1326,7 @@ export class RunManager {
                 started_at: r.started_at,
                 updated_at: r.updated_at,
                 last_action: typeof r.current_action === "string" ? r.current_action : r.current_action?.title,
+                current_phase: activePhase,
                 completed_steps_count: r.completed_steps.length,
               });
             }
