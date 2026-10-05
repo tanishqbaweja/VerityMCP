@@ -40,7 +40,7 @@ class ObservabilityManager {
     const successRate = totalAudited > 0 ? ((successfulAudited / totalAudited) * 100).toFixed(1) + "%" : "100%";
 
     const data = {
-      version: "4.0.0",
+      version: "1.0.0",
       os: {
         platform: process.platform,
         release: os.release(),
@@ -102,8 +102,8 @@ class ObservabilityManager {
     };
 
     const text = [
-      `=== DevSpace 4.0 System Diagnostics ===`,
-      `Version: 4.0.0`,
+      `=== VerityMCP System Diagnostics ===`,
+      `Version: 1.0.0`,
       `OS: ${process.platform} ${os.release()} (${process.arch})`,
       `Default Shell: ${shells.defaultShell}`,
       `Shells:`,
@@ -119,13 +119,13 @@ class ObservabilityManager {
 
     return {
       success: true,
-      action: "devspace_diagnostics",
+      action: "verity_diagnostics",
       text,
       verification: {
         performed: true,
         passed: true,
         method: "system_subsystems_health_probe",
-        details: { version: "4.0.0", healthy: true },
+        details: { version: "1.0.0", healthy: true },
       },
       data,
       durationMs: Date.now() - startTime,

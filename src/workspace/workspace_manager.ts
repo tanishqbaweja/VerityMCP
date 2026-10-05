@@ -90,7 +90,7 @@ export class WorkspaceManager {
 
     // Format rich welcoming context for agent
     const lines = [
-      `[DevSpace 4.0] Workspace opened: ${root} (Handle: ${id})`,
+      `[VerityMCP] Workspace opened: ${root} (Handle: ${id})`,
       `Repository Summary: ${repoMap.summary}`,
       `Git: branch "${git.branch}" (${git.isClean ? "clean" : `${git.modifiedCount} uncommitted changes`})`,
       `Languages: ${repoMap.languages.join(", ") || "generic"}`,

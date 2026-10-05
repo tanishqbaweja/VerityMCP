@@ -47,7 +47,7 @@ export class SubagentEngine {
     this.subagents.set(id, session);
 
     const text = [
-      `[DevSpace 4.0] Subagent Delegated:`,
+      `[VerityMCP] Subagent Delegated:`,
       `- ID: ${id}`,
       `- Persona: ${persona}`,
       `- Task: "${task}"`,

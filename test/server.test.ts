@@ -1,9 +1,9 @@
 import { describe, it, before, after } from "node:test";
 import assert from "node:assert";
 import { createServer, type Server } from "node:http";
-import { createDevSpaceApp } from "../src/server/app.js";
+import { createVerityApp } from "../src/server/app.js";
 import { workspaceManager } from "../src/workspace/workspace_manager.js";
-import type { DevSpaceConfig } from "../src/types/index.js";
+import type { VerityConfig } from "../src/types/index.js";
 
 function parseMcpPayload(text: string): any {
   // If text is SSE event stream
@@ -14,14 +14,14 @@ function parseMcpPayload(text: string): any {
   return JSON.parse(text);
 }
 
-describe("DevSpace 4.0 Server & MCP End-to-End Test", () => {
+describe("VerityMCP Server & MCP End-to-End Test", () => {
   let server: Server;
   const testPort = 7985;
   const baseUrl = `http://127.0.0.1:${testPort}`;
-  const ownerToken = "test-token-devspace-4";
+  const ownerToken = "test-token-verity";
 
   before(async () => {
-    const config: DevSpaceConfig = {
+    const config: VerityConfig = {
       port: testPort,
       host: "127.0.0.1",
       publicBaseUrl: baseUrl,
@@ -30,7 +30,7 @@ describe("DevSpace 4.0 Server & MCP End-to-End Test", () => {
       worktreesDir: "",
     };
 
-    const instance = createDevSpaceApp(config);
+    const instance = createVerityApp(config);
     server = createServer(instance.app);
     await new Promise<void>((resolve) => server.listen(testPort, "127.0.0.1", resolve));
   });
@@ -43,15 +43,15 @@ describe("DevSpace 4.0 Server & MCP End-to-End Test", () => {
     const res = await fetch(`${baseUrl}/healthz`);
     assert.strictEqual(res.status, 200);
     const json = await res.json();
-    assert.strictEqual(json.service, "DevSpace 4.0");
-    assert.strictEqual(json.version, "4.0.0");
+    assert.strictEqual(json.service, "VerityMCP");
+    assert.strictEqual(json.version, "1.0.0");
   });
 
   it("serves RFC 9728 and RFC 8414 metadata", async () => {
     const resProt = await fetch(`${baseUrl}/.well-known/oauth-protected-resource`);
     assert.strictEqual(resProt.status, 200);
     const protJson = await resProt.json();
-    assert.strictEqual(protJson.resource_name, "DevSpace 4.0 MCP Server");
+    assert.strictEqual(protJson.resource_name, "VerityMCP Server");
 
     const resAuth = await fetch(`${baseUrl}/.well-known/oauth-authorization-server`);
     assert.strictEqual(resAuth.status, 200);
@@ -101,8 +101,8 @@ describe("DevSpace 4.0 Server & MCP End-to-End Test", () => {
     assert.strictEqual(initRes.status, 200);
     const initText = await initRes.text();
     const initJson = parseMcpPayload(initText);
-    assert.strictEqual(initJson.result.serverInfo.name, "devspace-4.0");
-    assert.strictEqual(initJson.result.serverInfo.version, "4.0.0");
+    assert.strictEqual(initJson.result.serverInfo.name, "verity-mcp");
+    assert.strictEqual(initJson.result.serverInfo.version, "1.0.0");
 
     // 2. Tools list
     const toolsRes = await fetch(`${baseUrl}/mcp`, {
@@ -141,9 +141,9 @@ describe("DevSpace 4.0 Server & MCP End-to-End Test", () => {
     assert.ok(toolNames.includes("read_process_output"));
     assert.ok(toolNames.includes("search_code"));
     assert.ok(toolNames.includes("get_outline"));
-    assert.ok(toolNames.includes("devspace_diagnostics"));
+    assert.ok(toolNames.includes("verity_diagnostics"));
 
-    // 3. Call devspace_diagnostics
+    // 3. Call verity_diagnostics
     const diagRes = await fetch(`${baseUrl}/mcp`, {
       method: "POST",
       headers: {
@@ -156,7 +156,7 @@ describe("DevSpace 4.0 Server & MCP End-to-End Test", () => {
         id: 3,
         method: "tools/call",
         params: {
-          name: "devspace_diagnostics",
+          name: "verity_diagnostics",
           arguments: {},
         },
       }),
@@ -165,6 +165,6 @@ describe("DevSpace 4.0 Server & MCP End-to-End Test", () => {
     assert.strictEqual(diagRes.status, 200);
     const diagText = await diagRes.text();
     const diagJson = parseMcpPayload(diagText);
-    assert.ok(diagJson.result.content[0].text.includes("DevSpace 4.0 System Diagnostics"));
+    assert.ok(diagJson.result.content[0].text.includes("VerityMCP System Diagnostics"));
   });
 });

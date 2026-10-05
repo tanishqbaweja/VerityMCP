@@ -1,35 +1,35 @@
-# Migrating to DevSpace 4.0
+# Migrating to VerityMCP
 
-DevSpace 4.0 is a complete, unified evolution that replaces and synthesizes:
-- **DevSpace** (Port 7676)
-- **DevSpace 2.0** (Port 7878)
-- **DevSpace 3.0** (Port 7979)
+VerityMCP is a complete, unified local development and computer execution MCP server that replaces and synthesizes legacy iterations:
+- **VerityMCP 1.0** (Port 7676)
+- **VerityMCP 2.0** (Port 7878)
+- **VerityMCP 3.0** (Port 7979)
 
-It operates on dedicated port **`7980`**, providing zero port collisions with predecessors and strict isolation.
+It operates on dedicated port **`7980`**, providing zero port collisions with predecessors and strict process isolation.
 
 ---
 
-## Why Migrate to DevSpace 4.0?
+## Why Migrate to VerityMCP?
 
-DevSpace 4.0 was built around one non-negotiable principle:
-> **"AN AGENT MUST BE ABLE TO TRUST ITS TOOLS."**
+VerityMCP was built around one non-negotiable principle:
+> **"AN AGENT MUST BE ABLE TO TRUST ITS TOOLS."**  
 > A tool returning success when nothing happened is worse than a tool returning an error.
 
 ### Key Predecessor Defects Eliminated
 
-| Predecessor | Problem | DevSpace 4.0 Resolution |
+| Predecessor | Problem | VerityMCP Resolution |
 | :--- | :--- | :--- |
-| **DevSpace 2.0** | **Patch False-Success**: When applying patches with unmatched hunks, `apply_patch` silently returned `success: true` while leaving the disk untouched. | **Mandatory Post-Mutation SHA-256 Byte Readback**: Validates hunk count > 0, rejects no-op changes, tests candidate lines against actual disk lines, and compares post-write byte buffer against expected text. |
-| **DevSpace 3.0** | **Windows Bash Crash**: Hardcoded call to `bash` invoked WSL (`C:\Windows\System32\bash.exe`), causing `execvpe(/bin/bash) failed` when WSL was unconfigured. | **Windows-First Shell Detection**: Probes PowerShell 7 (`pwsh`), Windows PowerShell 5.1, `cmd.exe`, verified Git Bash paths, and checked WSL distros. Yields actionable `BASH_NOT_AVAILABLE` error guiding agent to use PowerShell or cmd. |
-| **DevSpace 3.0** | **Background Task Output Dropping**: Primitive string closure (`task.stdout = ""`) remained empty when chunk events fired. Polling returned empty output. | **Durable Chunk Buffering & Pagination**: All output chunks are appended to a persistent ring/buffer with stream, timestamp, and byte counts. Supports cursor pagination (`read_process_output`). |
-| **DevSpace 3.0** | **Blind to Images**: Reading `.png` / `.jpg` files returned plain text `[Image file: ...]`, rendering the model blind. | **Direct MCP Image Content**: Automatically detects binary image mime-types and returns direct `{ type: "image", data: base64, mimeType }` content blocks alongside text metadata. |
-| **DevSpace & 2.0** | **Browser Flakiness**: Ad-hoc CLI spawning without session tracking or verified DOM assertions. | **First-Class Persistent Playwright Engine**: Named sessions, accessibility tree snapshots with versioned refs (`[ref=e1]`), verified form fill and checkbox assertions with live DOM readback, and screenshots saved to disk and returned as base64 images. |
+| **VerityMCP 2.0** | **Patch False-Success**: When applying patches with unmatched hunks, `apply_patch` silently returned `success: true` while leaving the disk untouched. | **Mandatory Post-Mutation SHA-256 Byte Readback**: Validates hunk count > 0, rejects no-op changes, tests candidate lines against actual disk lines, and compares post-write byte buffer against expected text. |
+| **VerityMCP 3.0** | **Windows Bash Crash**: Hardcoded call to `bash` invoked WSL (`C:\Windows\System32\bash.exe`), causing `execvpe(/bin/bash) failed` when WSL was unconfigured. | **Windows-First Shell Detection**: Probes PowerShell 7 (`pwsh`), Windows PowerShell 5.1, `cmd.exe`, verified Git Bash paths, and checked WSL distros. Yields actionable `BASH_NOT_AVAILABLE` error guiding agent to use PowerShell or cmd. |
+| **VerityMCP 3.0** | **Background Task Output Dropping**: Primitive string closure (`task.stdout = ""`) remained empty when chunk events fired. Polling returned empty output. | **Durable Chunk Buffering & Pagination**: All output chunks are appended to a persistent ring/buffer with stream, timestamp, and byte counts. Supports cursor pagination (`read_process_output`). |
+| **VerityMCP 3.0** | **Blind to Images**: Reading `.png` / `.jpg` files returned plain text `[Image file: ...]`, rendering the model blind. | **Direct MCP Image Content**: Automatically detects binary image mime-types and returns direct `{ type: "image", data: base64, mimeType }` content blocks alongside text metadata. |
+| **VerityMCP 1.0 & 2.0** | **Browser Flakiness**: Ad-hoc CLI spawning without session tracking or verified DOM assertions. | **First-Class Persistent Playwright Engine**: Named sessions, accessibility tree snapshots with versioned refs (`[ref=e1]`), verified form fill and checkbox assertions with live DOM readback, and screenshots saved to disk and returned as base64 images. |
 
 ---
 
 ## Comprehensive Tool Mapping Table
 
-| Capability | DevSpace | DevSpace 2.0 | DevSpace 3.0 | DevSpace 4.0 Unified Tool | Key DevSpace 4.0 Enhancement |
+| Capability | VerityMCP 1.0 | VerityMCP 2.0 | VerityMCP 3.0 | VerityMCP Unified Tool | Key Enhancement |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | **Workspace Init** | `open_workspace` | `open_workspace` | `open_workspace` | `open_workspace` | Returns rich repo map, Git branch/clean status, manifest dependencies, scripts, detected shells, and available skills. |
 | **Read File** | `read_file` | `read_file` | `read_file` | `read_file` | Adds line slicing, SHA-256 hash, and direct base64 image blocks for image formats. |
@@ -62,56 +62,38 @@ DevSpace 4.0 was built around one non-negotiable principle:
 | **Git Worktrees** | Shell worktree | Limited | None | `worktree_create`, `worktree_list`, `worktree_remove` | Isolated worktree management with dirty state safety checks. |
 | **Task Planning** | None | `task_*` | None | `task_create`, `task_update`, `task_list` | Persistent task store for structured multi-step planning and tracking. |
 | **Bounded Subagents** | None | None | `delegate_subagent` | `delegate_subagent`, `list_subagents`, `enter_plan_mode`, `exit_plan_mode` | Subagent execution engine with specialized personas (`explore`, `coding`, `review`, `verification`, `planning`). |
-| **Observability** | None | None | None | `devspace_diagnostics` | System diagnostics, shell health, browser status, and tool audit trail. |
+| **Observability** | None | None | None | `verity_diagnostics` | System diagnostics, shell health, browser status, and tool audit trail. |
 
 ---
 
 ## Client Configuration Migration
 
-To switch your MCP client configuration (e.g., ChatGPT Web, Cursor) from previous DevSpace versions to VerityMCP:
+To switch your MCP client configuration (e.g., ChatGPT Web, Cursor) to VerityMCP:
 
-### 1. ChatGPT Web MCP Configuration
+### 1. ChatGPT Web MCP Configuration (Streamable HTTP / SSE)
 
-Replace your existing server entry with DevSpace 4.0:
-
-```json
-{
-  "mcpServers": {
-    "devspace": {
-      "command": "node",
-      "args": [
-        "H:\\Github Repositories\\devspace 4.0\\dist\\cli.js"
-      ],
-      "env": {
-        "PORT": "7980"
-      }
-    }
-  }
-}
-```
-
-Or when connecting over Streamable HTTP:
+Connect over Streamable HTTP:
 
 ```json
 {
   "mcpServers": {
-    "devspace-4.0": {
+    "verity-mcp": {
       "url": "http://127.0.0.1:7980/mcp",
       "headers": {
-        "Authorization": "Bearer YOUR_DEVSPACE_AUTH_TOKEN"
+        "Authorization": "Bearer YOUR_VERITY_AUTH_TOKEN"
       }
     }
   }
 }
 ```
 
-*(Note: Find your auth token in `C:\Users\slato\.devspace\auth.json` or use owner token generated at startup).*
+*(Note: Find your auth token in `~/.verity/auth.json` or use the owner token printed during startup).*
 
 ---
 
 ## Response Envelope Standard
 
-All DevSpace 4.0 tools return a strictly typed `StandardToolResponse`:
+All VerityMCP tools return a strictly typed `StandardToolResponse`:
 
 ```typescript
 export interface StandardToolResponse<T = any> {

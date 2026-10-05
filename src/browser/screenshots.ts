@@ -39,7 +39,7 @@ export async function executeBrowserScreenshot(
   const requestedPath = outputPath || "(auto-generated artifact)";
   const resolvedPath = outputPath
     ? (path.isAbsolute(outputPath) ? path.resolve(outputPath) : path.resolve(workspaceRoot, outputPath))
-    : path.join(os.tmpdir(), `devspace4_screenshot_${randomUUID().slice(0, 8)}.png`);
+    : path.join(os.tmpdir(), `verity_screenshot_${randomUUID().slice(0, 8)}.png`);
 
   let buffer: Buffer;
   try {

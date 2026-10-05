@@ -10,7 +10,7 @@ import {
 } from "../src/browser/actions.js";
 import { executeBrowserScreenshot } from "../src/browser/screenshots.js";
 
-describe("DevSpace 4.0 First-Class Browser Automation Engine", () => {
+describe("VerityMCP First-Class Browser Automation Engine", () => {
   after(async () => {
     await browserManager.closeAll();
   });
@@ -22,9 +22,9 @@ describe("DevSpace 4.0 First-Class Browser Automation Engine", () => {
     const html = `
       <!DOCTYPE html>
       <html>
-        <head><title>DevSpace 4.0 Test Page</title></head>
+        <head><title>VerityMCP Test Page</title></head>
         <body>
-          <h1>Welcome to DevSpace 4.0</h1>
+          <h1>Welcome to VerityMCP</h1>
           <form id="todo-form">
             <label for="task-input">Task Name:</label>
             <input type="text" id="task-input" name="task" placeholder="Enter task..." />
@@ -42,7 +42,7 @@ describe("DevSpace 4.0 First-Class Browser Automation Engine", () => {
     // 1. Navigate
     const navRes = await executeNavigate(session, dataUrl);
     assert.strictEqual(navRes.success, true);
-    assert.strictEqual(navRes.data?.title, "DevSpace 4.0 Test Page");
+    assert.strictEqual(navRes.data?.title, "VerityMCP Test Page");
 
     // 2. Snapshot
     const snapRes = await takeBrowserSnapshot(session);
@@ -84,7 +84,7 @@ describe("DevSpace 4.0 First-Class Browser Automation Engine", () => {
 
   it("resolves custom relative screenshot path against workspace root and verifies persistence", async () => {
     const session = await browserManager.getSession("test_session_screenshot");
-    const testRelPath = ".devspace4-test-screenshot.png";
+    const testRelPath = ".verity-test-screenshot.png";
     const nestedRelPath = "test-results/browser/nested-shot.png";
 
     // 1. Test flat relative path

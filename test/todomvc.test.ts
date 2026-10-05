@@ -14,7 +14,7 @@ import {
 } from "../src/browser/actions.js";
 import { executeBrowserScreenshot } from "../src/browser/screenshots.js";
 
-describe("DevSpace 4.0 Section 30 Playwright Acceptance: TodoMVC End-to-End Scenario", () => {
+describe("VerityMCP Section 30 Playwright Acceptance: TodoMVC End-to-End Scenario", () => {
   after(async () => {
     await browserManager.closeAll();
   });
@@ -83,11 +83,11 @@ describe("DevSpace 4.0 Section 30 Playwright Acceptance: TodoMVC End-to-End Scen
     const todoInput = snap1.data?.elements.find((e) => e.tagName === "input" && e.placeholder.includes("needs to be done"));
     assert.ok(todoInput, "Todo input found in initial snapshot");
 
-    // 3. Fill: "DevSpace 4.0 visual verification"
-    const fillRes = await executeFill(session, { ref: todoInput.ref }, "DevSpace 4.0 visual verification");
+    // 3. Fill: "VerityMCP visual verification"
+    const fillRes = await executeFill(session, { ref: todoInput.ref }, "VerityMCP visual verification");
     assert.strictEqual(fillRes.success, true);
     assert.strictEqual(fillRes.verification.passed, true);
-    assert.strictEqual(fillRes.data?.verifiedValue, "DevSpace 4.0 visual verification");
+    assert.strictEqual(fillRes.data?.verifiedValue, "VerityMCP visual verification");
 
     // 4. Press Enter on input
     const keyRes = await executePressKey(session, "Enter", { ref: todoInput.ref });
@@ -101,7 +101,7 @@ describe("DevSpace 4.0 Section 30 Playwright Acceptance: TodoMVC End-to-End Scen
     // 6. Verify item exists
     const checkEl = snap2.data?.elements.find((e) => e.type === "checkbox");
     assert.ok(checkEl, "New todo checkbox created and indexed");
-    assert.ok(snap2.data?.snapshotText.includes("DevSpace 4.0 visual verification"));
+    assert.ok(snap2.data?.snapshotText.includes("VerityMCP visual verification"));
 
     // 7. Screenshot
     const shotRes = await executeBrowserScreenshot({ session });
@@ -133,7 +133,7 @@ describe("DevSpace 4.0 Section 30 Playwright Acceptance: TodoMVC End-to-End Scen
     const consoleRes = executeGetConsole(session);
     assert.strictEqual(consoleRes.success, true);
     assert.ok(consoleRes.text.includes("TodoMVC initialized"));
-    assert.ok(consoleRes.text.includes("Added todo: DevSpace 4.0 visual verification"));
+    assert.ok(consoleRes.text.includes("Added todo: VerityMCP visual verification"));
 
     // Clean up
     await fs.unlink(shotPath).catch(() => {});

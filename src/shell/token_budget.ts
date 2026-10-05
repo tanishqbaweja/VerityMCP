@@ -20,7 +20,7 @@ export function formatOutputWithBudget(
   const tail = rawText.slice(-tailBudget);
   const droppedChars = totalChars - (headBudget + tailBudget);
 
-  const notice = `\n\n... [DevSpace 4.0: Output truncated (${droppedChars} characters omitted)] ...\n\n`;
+  const notice = `\n\n... [VerityMCP: Output truncated (${droppedChars} characters omitted)] ...\n\n`;
 
   return {
     text: `${head}${notice}${tail}`,

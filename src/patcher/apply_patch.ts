@@ -598,7 +598,7 @@ export async function executeApplyPatch(
         };
       }
 
-      // CRITICAL GUARD: DevSpace 2.0 False-Success Prevention
+      // CRITICAL GUARD: False-Success Prevention (detect unmatched patch hunks)
       // If updatedContent is identical to originalContent, this patch is a NO-OP.
       if (updatedContent === originalContent) {
         return {

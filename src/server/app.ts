@@ -1,19 +1,19 @@
 import express, { type Express, type Request, type Response } from "express";
 import { createMcpHandler } from "@modelcontextprotocol/server";
 import { toNodeHandler } from "@modelcontextprotocol/node";
-import type { DevSpaceConfig } from "../types/index.js";
+import type { VerityConfig } from "../types/index.js";
 import { OAuthProvider } from "../auth/oauth_provider.js";
-import { createDevSpace4McpServer } from "./mcp_tools.js";
+import { createVerityMcpServer } from "./mcp_tools.js";
 import { workspaceManager } from "../workspace/workspace_manager.js";
 
-export interface DevSpaceAppInstance {
+export interface VerityAppInstance {
   app: Express;
-  config: DevSpaceConfig;
+  config: VerityConfig;
   oauthProvider: OAuthProvider;
   resolveBaseUrl: (req?: Request) => string;
 }
 
-export function createDevSpaceApp(config: DevSpaceConfig): DevSpaceAppInstance {
+export function createVerityApp(config: VerityConfig): VerityAppInstance {
   const app = express();
   const oauthProvider = new OAuthProvider(config);
 
@@ -48,8 +48,8 @@ export function createDevSpaceApp(config: DevSpaceConfig): DevSpaceAppInstance {
   app.get("/healthz", (_req, res) => {
     res.json({
       ok: true,
-      service: "DevSpace 4.0",
-      version: "4.0.0",
+      service: "VerityMCP",
+      version: "1.0.0",
       workspace: workspaceManager.getActiveWorkspaceRoot(),
       allowedRoots: config.allowedRoots,
     });
@@ -67,10 +67,10 @@ export function createDevSpaceApp(config: DevSpaceConfig): DevSpaceAppInstance {
 
   // Stateless MCP handler for ChatGPT Web
   const mcpHandler = createMcpHandler(
-    () => createDevSpace4McpServer(config),
+    () => createVerityMcpServer(config),
     {
       legacy: "stateless",
-      onerror: (err) => console.error("[DevSpace 4.0] MCP Handler error:", err),
+      onerror: (err) => console.error("[VerityMCP] MCP Handler error:", err),
     }
   );
 
@@ -97,7 +97,7 @@ export function createDevSpaceApp(config: DevSpaceConfig): DevSpaceAppInstance {
     try {
       await mcpNodeHandler(req, res, req.body);
     } catch (err: any) {
-      console.error("[DevSpace 4.0] Error handling request:", err);
+      console.error("[VerityMCP] Error handling request:", err);
       if (!res.headersSent) {
         res.status(500).json({
           jsonrpc: "2.0",

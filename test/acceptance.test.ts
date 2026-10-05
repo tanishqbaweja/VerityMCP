@@ -20,9 +20,9 @@ import { observabilityManager } from "../src/observability/diagnostics.js";
 import { discoverSkills, readSkillContent } from "../src/workspace/skills.js";
 import { workspaceManager } from "../src/workspace/workspace_manager.js";
 
-describe("DevSpace 4.0 Comprehensive Acceptance Suite", () => {
+describe("VerityMCP Comprehensive Acceptance Suite", () => {
   it("verifies full filesystem mutations and image read lifecycle", async () => {
-    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "devspace4-acc-"));
+    const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "verity-acc-"));
 
     // 1. write_file with verification
     const writeRes = await executeWriteFile({
@@ -117,7 +117,7 @@ describe("DevSpace 4.0 Comprehensive Acceptance Suite", () => {
     // 1. search_code (ripgrep)
     const searchRes = executeSearchCode({
       workspaceRoot: root,
-      query: "createDevSpace4McpServer",
+      query: "createVerityMcpServer",
       globFilter: "*.ts",
     });
     assert.strictEqual(searchRes.success, true);
@@ -144,7 +144,7 @@ describe("DevSpace 4.0 Comprehensive Acceptance Suite", () => {
 
   it("verifies task planning store and observability diagnostics", async () => {
     // 1. Task lifecycle
-    const createRes = taskStore.createTask("DevSpace 4.0 Final Verification", "Run all tests and build");
+    const createRes = taskStore.createTask("VerityMCP Final Verification", "Run all tests and build");
     assert.strictEqual(createRes.success, true);
     const taskId = createRes.data?.id!;
 
@@ -160,7 +160,7 @@ describe("DevSpace 4.0 Comprehensive Acceptance Suite", () => {
     const diagRes = observabilityManager.getDiagnostics();
     assert.strictEqual(diagRes.success, true);
     assert.strictEqual(diagRes.verification.passed, true);
-    assert.strictEqual(diagRes.data?.version, "4.0.0");
+    assert.strictEqual(diagRes.data?.version, "1.0.0");
   });
 
   it("verifies global and workspace skill discovery and read lifecycle", async () => {

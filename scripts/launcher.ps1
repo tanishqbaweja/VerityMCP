@@ -6,7 +6,7 @@ if (-not (Test-Path $cloudflaredPath)) {
     $cloudflaredPath = "cloudflared"
 }
 
-# Dedicated port for VerityMCP (never touches legacy devspace servers)
+# Dedicated port for VerityMCP
 $port = 7980
 $portBusy = Get-NetTCPConnection -LocalPort 7980 -State Listen -ErrorAction SilentlyContinue
 if ($portBusy) {
@@ -58,7 +58,7 @@ try {
 }
 
 # Read owner token if available
-$authPath = "$env:USERPROFILE\.devspace\auth.json"
+$authPath = "$env:USERPROFILE\.verity\auth.json"
 $ownerToken = ""
 if (Test-Path $authPath) {
     try {

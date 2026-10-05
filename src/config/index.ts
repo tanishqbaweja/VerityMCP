@@ -1,19 +1,21 @@
 import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
-import { randomBytes } from "node:crypto";
-import type { DevSpaceConfig } from "../types/index.js";
+import type { VerityConfig } from "../types/index.js";
 
-export function loadConfig(overrides?: Partial<DevSpaceConfig>): DevSpaceConfig {
-  const port = parseInt(process.env.DEVSPACE_PORT || process.env.PORT || "7980", 10);
-  const host = process.env.DEVSPACE_HOST || "127.0.0.1";
-  const publicBaseUrl = process.env.DEVSPACE_PUBLIC_BASE_URL || "";
+export function loadConfig(overrides?: Partial<VerityConfig>): VerityConfig {
+  const port = parseInt(
+    process.env.VERITY_PORT || process.env.PORT || "7980",
+    10
+  );
+  const host = process.env.VERITY_HOST || "127.0.0.1";
+  const publicBaseUrl = process.env.VERITY_PUBLIC_BASE_URL || "";
 
-  // Probe owner token from ~/.devspace/auth.json or env
-  let ownerToken = process.env.DEVSPACE_OWNER_TOKEN;
+  // Probe owner token from ~/.verity/auth.json or env
+  let ownerToken = process.env.VERITY_OWNER_TOKEN;
   if (!ownerToken) {
+    const authPath = path.join(os.homedir(), ".verity", "auth.json");
     try {
-      const authPath = path.join(os.homedir(), ".devspace", "auth.json");
       if (fs.existsSync(authPath)) {
         const raw = fs.readFileSync(authPath, "utf-8");
         const parsed = JSON.parse(raw);
@@ -26,23 +28,19 @@ export function loadConfig(overrides?: Partial<DevSpaceConfig>): DevSpaceConfig 
     } catch {}
   }
 
-  const allowedRootsEnv = process.env.DEVSPACE_ALLOWED_ROOTS;
+  const allowedRootsEnv = process.env.VERITY_ALLOWED_ROOTS;
   let allowedRoots: string[] = [];
 
   if (allowedRootsEnv) {
     allowedRoots = allowedRootsEnv.split(",").map((s) => path.resolve(s.trim()));
   } else {
-    // Sensible defaults: current workspace and user drive roots
-    allowedRoots = [
-      process.cwd(),
-      "H:\\Github Repositories",
-      os.homedir(),
-    ];
+    // Sensible defaults: current workspace and user home directory
+    allowedRoots = [process.cwd(), os.homedir()];
   }
 
   const worktreesDir =
-    process.env.DEVSPACE_WORKTREES_DIR ||
-    path.join(os.homedir(), ".devspace", "worktrees");
+    process.env.VERITY_WORKTREES_DIR ||
+    path.join(os.homedir(), ".verity", "worktrees");
 
   return {
     port: overrides?.port ?? port,

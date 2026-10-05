@@ -1,5 +1,5 @@
 /**
- * DevSpace 4.0 - Core Domain Types
+ * VerityMCP - Core Domain Types
  */
 
 export interface VerificationResult {
@@ -50,7 +50,7 @@ export interface Workspace {
   createdAt: number;
 }
 
-export interface DevSpaceConfig {
+export interface VerityConfig {
   port: number;
   host: string;
   publicBaseUrl: string;

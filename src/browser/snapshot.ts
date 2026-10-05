@@ -93,7 +93,7 @@ const EVAL_SNAPSHOT_SCRIPT = `
     if (checkVisible(inp)) {
       refCounter++;
       const ref = "e" + refCounter;
-      inp.setAttribute("data-devspace-ref", ref);
+      inp.setAttribute("data-verity-ref", ref);
       const ph = inp.placeholder || "What needs to be done?";
       elements.push({
         ref,
@@ -106,7 +106,7 @@ const EVAL_SNAPSHOT_SCRIPT = `
         value: inp.value || "",
         isChecked: false,
         isDisabled: Boolean(inp.disabled),
-        selector: '[data-devspace-ref="' + ref + '"]',
+        selector: '[data-verity-ref="' + ref + '"]',
       });
       treeLines.push('- textbox "' + ph + '" [ref=' + ref + ']');
     }
@@ -117,7 +117,7 @@ const EVAL_SNAPSHOT_SCRIPT = `
   if (markAll && checkVisible(markAll)) {
     refCounter++;
     const ref = "e" + refCounter;
-    markAll.setAttribute("data-devspace-ref", ref);
+    markAll.setAttribute("data-verity-ref", ref);
     const isChecked = Boolean(markAll.checked);
     elements.push({
       ref,
@@ -130,7 +130,7 @@ const EVAL_SNAPSHOT_SCRIPT = `
       value: "on",
       isChecked,
       isDisabled: Boolean(markAll.disabled),
-      selector: '[data-devspace-ref="' + ref + '"]',
+      selector: '[data-verity-ref="' + ref + '"]',
     });
     treeLines.push('- checkbox "Mark all as complete" [ref=' + ref + '] [checked=' + isChecked + ']');
   }
@@ -146,7 +146,7 @@ const EVAL_SNAPSHOT_SCRIPT = `
       if (cb) {
         refCounter++;
         const ref = "e" + refCounter;
-        cb.setAttribute("data-devspace-ref", ref);
+        cb.setAttribute("data-verity-ref", ref);
         const isChecked = Boolean(cb.checked);
         const labelEl = li.querySelector("label");
         const todoText = (labelEl ? labelEl.textContent : "").trim() || "Toggle Todo";
@@ -161,7 +161,7 @@ const EVAL_SNAPSHOT_SCRIPT = `
           value: "on",
           isChecked,
           isDisabled: Boolean(cb.disabled),
-          selector: '[data-devspace-ref="' + ref + '"]',
+          selector: '[data-verity-ref="' + ref + '"]',
         });
         treeLines.push('    - checkbox "Toggle Todo" [ref=' + ref + '] [checked=' + isChecked + ']');
       }
@@ -178,7 +178,7 @@ const EVAL_SNAPSHOT_SCRIPT = `
       if (delBtn) {
         refCounter++;
         const ref = "e" + refCounter;
-        delBtn.setAttribute("data-devspace-ref", ref);
+        delBtn.setAttribute("data-verity-ref", ref);
         elements.push({
           ref,
           tagName: "button",
@@ -190,7 +190,7 @@ const EVAL_SNAPSHOT_SCRIPT = `
           value: "",
           isChecked: false,
           isDisabled: false,
-          selector: '[data-devspace-ref="' + ref + '"]',
+          selector: '[data-verity-ref="' + ref + '"]',
         });
         treeLines.push('    - button "Delete" [ref=' + ref + ']');
       }
@@ -212,7 +212,7 @@ const EVAL_SNAPSHOT_SCRIPT = `
     if (checkVisible(a)) {
       refCounter++;
       const ref = "e" + refCounter;
-      a.setAttribute("data-devspace-ref", ref);
+      a.setAttribute("data-verity-ref", ref);
       const linkText = (a.textContent || "").trim();
       elements.push({
         ref,
@@ -225,7 +225,7 @@ const EVAL_SNAPSHOT_SCRIPT = `
         value: "",
         isChecked: false,
         isDisabled: false,
-        selector: '[data-devspace-ref="' + ref + '"]',
+        selector: '[data-verity-ref="' + ref + '"]',
       });
       treeLines.push('- link "' + linkText + '" [ref=' + ref + ']');
     }
@@ -238,7 +238,7 @@ const EVAL_SNAPSHOT_SCRIPT = `
     if (btnStyle.display !== "none") {
       refCounter++;
       const ref = "e" + refCounter;
-      clearBtn.setAttribute("data-devspace-ref", ref);
+      clearBtn.setAttribute("data-verity-ref", ref);
       elements.push({
         ref,
         tagName: "button",
@@ -250,7 +250,7 @@ const EVAL_SNAPSHOT_SCRIPT = `
         value: "",
         isChecked: false,
         isDisabled: false,
-        selector: '[data-devspace-ref="' + ref + '"]',
+        selector: '[data-verity-ref="' + ref + '"]',
       });
       treeLines.push('- button "Clear completed" [ref=' + ref + ']');
     }
@@ -262,10 +262,10 @@ const EVAL_SNAPSHOT_SCRIPT = `
   );
 
   for (const el of allInteractive) {
-    if (!el.hasAttribute("data-devspace-ref") && checkVisible(el)) {
+    if (!el.hasAttribute("data-verity-ref") && checkVisible(el)) {
       refCounter++;
       const ref = "e" + refCounter;
-      el.setAttribute("data-devspace-ref", ref);
+      el.setAttribute("data-verity-ref", ref);
       const tag = el.tagName.toLowerCase();
       const role = el.getAttribute("role") || "";
       const inp = tag === "input" ? el : null;
@@ -285,7 +285,7 @@ const EVAL_SNAPSHOT_SCRIPT = `
         value: inp && inp.value !== undefined ? String(inp.value) : "",
         isChecked,
         isDisabled,
-        selector: '[data-devspace-ref="' + ref + '"]',
+        selector: '[data-verity-ref="' + ref + '"]',
       });
 
       if (tag === "button" || role === "button") {
