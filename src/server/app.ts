@@ -6,6 +6,9 @@ import { OAuthProvider } from "../auth/oauth_provider.js";
 import { createVerityMcpServer } from "./mcp_tools.js";
 import { workspaceManager } from "../workspace/workspace_manager.js";
 
+import { getMonitorHtml } from "../ui/monitor_html.js";
+import { activityStream } from "../observability/activity_stream.js";
+
 export interface VerityAppInstance {
   app: Express;
   config: VerityConfig;
@@ -52,6 +55,49 @@ export function createVerityApp(config: VerityConfig): VerityAppInstance {
       version: "1.0.0",
       workspace: workspaceManager.getActiveWorkspaceRoot(),
       allowedRoots: config.allowedRoots,
+    });
+  });
+
+  // VerityMCP Activity Monitor UI
+  app.get("/monitor", (_req, res) => {
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    res.send(getMonitorHtml());
+  });
+
+  // Polling endpoint for activity events
+  app.get("/activity/events", (req, res) => {
+    const cursor = parseInt(req.query.cursor as string, 10) || 0;
+    const limit = parseInt(req.query.limit as string, 10) || 50;
+    const result = activityStream.read({ cursor, limit });
+    res.json(result);
+  });
+
+  // Server-Sent Events (SSE) live activity stream
+  app.get("/activity/stream", (req, res) => {
+    res.setHeader("Content-Type", "text/event-stream");
+    res.setHeader("Cache-Control", "no-cache");
+    res.setHeader("Connection", "keep-alive");
+    if (typeof (res as any).flushHeaders === "function") {
+      (res as any).flushHeaders();
+    }
+
+    res.write(`data: ${JSON.stringify({ type: "info", title: "Connected to VerityMCP activity stream", timestamp: new Date().toISOString() })}\n\n`);
+
+    const unsubscribe = activityStream.subscribe((event) => {
+      res.write(`data: ${JSON.stringify(event)}\n\n`);
+    });
+
+    req.on("close", () => {
+      unsubscribe();
+    });
+  });
+
+  // Current active action
+  app.get("/activity/current", (_req, res) => {
+    const current = activityStream.getCurrentAction();
+    res.json({
+      state: current ? "working" : "idle",
+      current_action: current,
     });
   });
 

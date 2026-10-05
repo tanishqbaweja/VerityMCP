@@ -117,6 +117,27 @@ export interface EditNotebookOptions {
   editMode?: "replace" | "insert" | "delete";
 }
 
+export function detectJsonFormatting(raw: string): { indent: number | string; trailingNewline: string } {
+  const trailingNewline = raw.endsWith("\r\n") ? "\r\n" : raw.endsWith("\n") ? "\n" : "";
+  const lines = raw.split(/\r?\n/);
+  if (lines.length <= 1) {
+    return { indent: 0, trailingNewline };
+  }
+
+  for (const line of lines) {
+    const match = line.match(/^(\s+)\S/);
+    if (match) {
+      const indentStr = match[1];
+      if (indentStr.startsWith("\t")) {
+        return { indent: "\t", trailingNewline };
+      }
+      return { indent: indentStr.length, trailingNewline };
+    }
+  }
+
+  return { indent: 2, trailingNewline };
+}
+
 export async function executeEditNotebook(
   options: EditNotebookOptions
 ): Promise<StandardToolResponse<{ notebookPath: string; totalCells: number; cellId?: string }>> {
@@ -206,7 +227,11 @@ export async function executeEditNotebook(
       }
     }
 
-    const newContent = JSON.stringify(nb, null, 2);
+    const formatting = detectJsonFormatting(raw);
+    const newContent =
+      (formatting.indent === 0
+        ? JSON.stringify(nb)
+        : JSON.stringify(nb, null, formatting.indent)) + formatting.trailingNewline;
     await fs.writeFile(target, newContent, "utf-8");
 
     // MANDATORY POST-MUTATION VERIFICATION

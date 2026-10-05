@@ -9,6 +9,64 @@ import { activityStream } from "../observability/activity_stream.js";
 import { verifyFileExistence } from "../verification/index.js";
 import type { StandardToolResponse } from "../types/index.js";
 
+function emitBrowserActionStart(
+  session: BrowserSession,
+  tool: string,
+  displayTitle: string,
+  target?: any,
+  purpose?: string
+) {
+  return activityStream.emit({
+    type: "action_started",
+    tool,
+    title: displayTitle,
+    display_title: displayTitle,
+    purpose,
+    target,
+    browser_session_id: session.id,
+    status: "running",
+  });
+}
+
+function emitBrowserActionComplete(
+  session: BrowserSession,
+  tool: string,
+  displayTitle: string,
+  evidence?: any,
+  target?: any,
+  isVerification = true
+) {
+  return activityStream.emit({
+    type: isVerification ? "verification" : "action_completed",
+    tool,
+    title: displayTitle,
+    display_title: displayTitle,
+    evidence,
+    target,
+    browser_session_id: session.id,
+    status: isVerification ? "verified" : "completed",
+  });
+}
+
+function emitBrowserActionFailure(
+  session: BrowserSession,
+  tool: string,
+  displayTitle: string,
+  error: string,
+  target?: any
+) {
+  return activityStream.emit({
+    type: "failure",
+    tool,
+    title: `${displayTitle}: ${error}`,
+    display_title: displayTitle,
+    evidence: { error },
+    target,
+    browser_session_id: session.id,
+    status: "failed",
+  });
+}
+
 function resolveTarget(
   session: BrowserSession,
   target: { ref?: string; selector?: string }
@@ -21,6 +79,18 @@ function resolveTarget(
     if (genMatch) {
       const refGen = parseInt(genMatch[1], 10);
       if (refGen !== session.documentGeneration) {
+        activityStream.emit({
+          type: "warning",
+          tool: "browser",
+          title: `Unsafe stale ref blocked: ${target.ref}`,
+          display_title: "Unsafe stale ref blocked",
+          purpose: "Prevent interaction with stale element from older document generation",
+          target: { ref: target.ref, session_id: session.id },
+          evidence: `Ref belongs to generation ${refGen}, current generation is ${session.documentGeneration}`,
+          status: "blocked",
+          browser_session_id: session.id,
+        });
+
         const err: any = new Error(
           `STALE_ELEMENT_REFERENCE: Ref "${target.ref}" belongs to document generation ${refGen}, but current generation is ${session.documentGeneration}. The page has navigated or reloaded.`
         );
@@ -43,6 +113,18 @@ function resolveTarget(
         (!cleanRef.includes(":")
           ? Array.from(session.refHistory.entries()).find(([k]) => k.endsWith(`:${cleanRef}`))?.[1]
           : undefined);
+
+      activityStream.emit({
+        type: "warning",
+        tool: "browser",
+        title: `Unsafe stale ref blocked: ${target.ref}`,
+        display_title: "Unsafe stale ref blocked",
+        purpose: "Prevent interaction with stale element missing from current snapshot",
+        target: { ref: target.ref, session_id: session.id },
+        evidence: `Ref missing in snapshot v${session.currentSnapshotVersion} (gen ${session.documentGeneration})`,
+        status: "blocked",
+        browser_session_id: session.id,
+      });
 
       const err: any = new Error(
         `STALE_ELEMENT_REFERENCE: Ref "${target.ref}" not found in current snapshot (v${session.currentSnapshotVersion}, gen ${session.documentGeneration}). The page DOM changed or element was navigated away. Please take a new browser_snapshot.`
@@ -69,6 +151,7 @@ export async function executeNavigate(
 ): Promise<StandardToolResponse<{ url: string; title: string; status: number }>> {
   const startTime = Date.now();
   const page = browserManager.getActivePage(session);
+  emitBrowserActionStart(session, "browser_navigate", `Navigating to ${url}`, { url });
 
   try {
     const response = await page.goto(url, {
@@ -78,6 +161,15 @@ export async function executeNavigate(
     const status = response ? response.status() : 200;
     const finalUrl = page.url();
     const title = await page.title();
+
+    emitBrowserActionComplete(
+      session,
+      "browser_navigate",
+      "Navigation complete",
+      { url: finalUrl, title, status, generation: session.documentGeneration },
+      { url: finalUrl },
+      status < 400
+    );
 
     return {
       success: status < 400,
@@ -106,6 +198,7 @@ export async function executeNavigate(
       durationMs: Date.now() - startTime,
     };
   } catch (err: any) {
+    emitBrowserActionFailure(session, "browser_navigate", "Navigation failed", err.message, { url });
     return {
       success: false,
       error_code: "COMMAND_FAILED",
@@ -130,9 +223,11 @@ export async function executeReload(
 ): Promise<StandardToolResponse<{ url: string }>> {
   const startTime = Date.now();
   const page = browserManager.getActivePage(session);
+  emitBrowserActionStart(session, "browser_reload", "Reloading page");
   try {
     await page.reload({ waitUntil: "domcontentloaded" });
     const currentUrl = page.url();
+    emitBrowserActionComplete(session, "browser_reload", "Page reloaded", { url: currentUrl });
     return {
       success: true,
       action: "page_reload",
@@ -150,6 +245,7 @@ export async function executeReload(
       durationMs: Date.now() - startTime,
     };
   } catch (err: any) {
+    emitBrowserActionFailure(session, "browser_reload", "Reload failed", err.message);
     return {
       success: false,
       error_code: "COMMAND_FAILED",
@@ -174,9 +270,11 @@ export async function executeGoBack(
 ): Promise<StandardToolResponse<{ url: string }>> {
   const startTime = Date.now();
   const page = browserManager.getActivePage(session);
+  emitBrowserActionStart(session, "browser_go_back", "Navigating back");
   try {
     await page.goBack();
     const currentUrl = page.url();
+    emitBrowserActionComplete(session, "browser_go_back", "Navigated back", { url: currentUrl });
     return {
       success: true,
       action: "page_back",
@@ -194,6 +292,7 @@ export async function executeGoBack(
       durationMs: Date.now() - startTime,
     };
   } catch (err: any) {
+    emitBrowserActionFailure(session, "browser_go_back", "History back failed", err.message);
     return {
       success: false,
       error_code: "COMMAND_FAILED",
@@ -218,9 +317,11 @@ export async function executeGoForward(
 ): Promise<StandardToolResponse<{ url: string }>> {
   const startTime = Date.now();
   const page = browserManager.getActivePage(session);
+  emitBrowserActionStart(session, "browser_go_forward", "Navigating forward");
   try {
     await page.goForward();
     const currentUrl = page.url();
+    emitBrowserActionComplete(session, "browser_go_forward", "Navigated forward", { url: currentUrl });
     return {
       success: true,
       action: "page_forward",
@@ -238,6 +339,7 @@ export async function executeGoForward(
       durationMs: Date.now() - startTime,
     };
   } catch (err: any) {
+    emitBrowserActionFailure(session, "browser_go_forward", "History forward failed", err.message);
     return {
       success: false,
       error_code: "COMMAND_FAILED",
@@ -263,12 +365,14 @@ export async function executeClick(
 ): Promise<StandardToolResponse<{ target: string; currentUrl: string }>> {
   const startTime = Date.now();
   const page = browserManager.getActivePage(session);
+  emitBrowserActionStart(session, "browser_click", `Clicking ${target.ref ? `[ref=${target.ref}]` : target.selector || "element"}`, target);
 
   let selector: string;
   try {
     selector = resolveTarget(session, target);
   } catch (err: any) {
     const isStale = err.code === "STALE_ELEMENT_REFERENCE";
+    emitBrowserActionFailure(session, "browser_click", "Target resolution failed", err.message, target);
     return {
       success: false,
       error_code: isStale ? "STALE_ELEMENT_REFERENCE" : "INVALID_ARGUMENT",
@@ -305,10 +409,18 @@ export async function executeClick(
 
     const locator = page.locator(selector).first();
     await locator.waitFor({ state: "attached", timeout: 10000 });
+    let firstClickErr: any = null;
     try {
       await locator.click({ timeout: 3000 });
-    } catch {
-      await locator.click({ force: true });
+    } catch (err: any) {
+      firstClickErr = err;
+    }
+
+    if (firstClickErr) {
+      // If navigation was already initiated/occurred as a result of the click, don't stall for 30s!
+      if (page.url() === beforeUrl) {
+        await locator.click({ force: true, timeout: 2000 }).catch(() => {});
+      }
     }
     await page.waitForTimeout(150);
 
@@ -374,6 +486,20 @@ export async function executeClick(
       ? `Clicked element successfully. Observed changes: ${observedChanges.map((c) => c.description).join("; ")}`
       : `Clicked element successfully. Execution: EXECUTED (no immediate DOM state delta observed).`;
 
+    emitBrowserActionComplete(
+      session,
+      "browser_click",
+      "Click verified",
+      {
+        observedChanges,
+        elementStillPresent,
+        afterChecked,
+        afterUrl,
+        method: hasStateDelta ? "dom_delta_observation" : "playwright_click",
+      },
+      target
+    );
+
     return {
       success: true,
       action: `browser_click ${target.ref ? `[ref=${target.ref}]` : selector}`,
@@ -409,6 +535,7 @@ export async function executeClick(
     };
   } catch (err: any) {
     const isStale = err.code === "STALE_ELEMENT_REFERENCE" || err.message?.includes("STALE_ELEMENT_REFERENCE");
+    emitBrowserActionFailure(session, "browser_click", "Click failed", err.message, target);
     return {
       success: false,
       error_code: isStale ? "STALE_ELEMENT_REFERENCE" : "COMMAND_FAILED",
@@ -434,11 +561,13 @@ export async function executeDoubleClick(
 ): Promise<StandardToolResponse<{ target: string }>> {
   const startTime = Date.now();
   const page = browserManager.getActivePage(session);
+  emitBrowserActionStart(session, "browser_double_click", `Double-clicking ${target.ref ? `[ref=${target.ref}]` : target.selector || "element"}`, target);
   let selector: string;
   try {
     selector = resolveTarget(session, target);
   } catch (err: any) {
     const isStale = err.code === "STALE_ELEMENT_REFERENCE";
+    emitBrowserActionFailure(session, "browser_double_click", "Target resolution failed", err.message, target);
     return {
       success: false,
       error_code: isStale ? "STALE_ELEMENT_REFERENCE" : "INVALID_ARGUMENT",
@@ -453,6 +582,7 @@ export async function executeDoubleClick(
   try {
     const locator = page.locator(selector).first();
     await locator.dblclick();
+    emitBrowserActionComplete(session, "browser_double_click", "Double-click complete", { target: selector }, target);
     return {
       success: true,
       action: `browser_double_click ${target.ref ? `[ref=${target.ref}]` : selector}`,
@@ -465,6 +595,7 @@ export async function executeDoubleClick(
       durationMs: Date.now() - startTime,
     };
   } catch (err: any) {
+    emitBrowserActionFailure(session, "browser_double_click", "Double-click failed", err.message, target);
     return {
       success: false,
       error_code: "COMMAND_FAILED",
@@ -483,11 +614,13 @@ export async function executeHover(
 ): Promise<StandardToolResponse<{ target: string }>> {
   const startTime = Date.now();
   const page = browserManager.getActivePage(session);
+  emitBrowserActionStart(session, "browser_hover", `Hovering over ${target.ref ? `[ref=${target.ref}]` : target.selector || "element"}`, target);
   let selector: string;
   try {
     selector = resolveTarget(session, target);
   } catch (err: any) {
     const isStale = err.code === "STALE_ELEMENT_REFERENCE";
+    emitBrowserActionFailure(session, "browser_hover", "Target resolution failed", err.message, target);
     return {
       success: false,
       error_code: isStale ? "STALE_ELEMENT_REFERENCE" : "INVALID_ARGUMENT",
@@ -502,6 +635,7 @@ export async function executeHover(
   try {
     const locator = page.locator(selector).first();
     await locator.hover();
+    emitBrowserActionComplete(session, "browser_hover", "Hover complete", { target: selector }, target, false);
     return {
       success: true,
       action: `browser_hover ${target.ref ? `[ref=${target.ref}]` : selector}`,
@@ -514,6 +648,7 @@ export async function executeHover(
       durationMs: Date.now() - startTime,
     };
   } catch (err: any) {
+    emitBrowserActionFailure(session, "browser_hover", "Hover failed", err.message, target);
     return {
       success: false,
       error_code: "COMMAND_FAILED",
@@ -533,12 +668,14 @@ export async function executeFill(
 ): Promise<StandardToolResponse<{ target: string; verifiedValue: string }>> {
   const startTime = Date.now();
   const page = browserManager.getActivePage(session);
+  emitBrowserActionStart(session, "browser_fill", `Filling ${target.ref ? `[ref=${target.ref}]` : target.selector || "element"}`, { ...target, value });
 
   let selector: string;
   try {
     selector = resolveTarget(session, target);
   } catch (err: any) {
     const isStale = err.code === "STALE_ELEMENT_REFERENCE";
+    emitBrowserActionFailure(session, "browser_fill", "Target resolution failed", err.message, target);
     return {
       success: false,
       error_code: isStale ? "STALE_ELEMENT_REFERENCE" : "INVALID_ARGUMENT",
@@ -566,6 +703,7 @@ export async function executeFill(
     const passed = actualValue === value;
 
     if (!passed) {
+      emitBrowserActionFailure(session, "browser_fill", "DOM readback mismatch", `Expected "${value}", found "${actualValue}"`, target);
       return {
         success: false,
         error_code: "ELEMENT_NOT_EDITABLE",
@@ -586,6 +724,8 @@ export async function executeFill(
         durationMs: Date.now() - startTime,
       };
     }
+
+    emitBrowserActionComplete(session, "browser_fill", "Form fill verified", { verifiedValue: actualValue, method: "dom_inputValue_readback" }, target);
 
     return {
       success: true,
@@ -612,6 +752,7 @@ export async function executeFill(
     };
   } catch (err: any) {
     const isStale = err.code === "STALE_ELEMENT_REFERENCE" || err.message?.includes("STALE_ELEMENT_REFERENCE");
+    emitBrowserActionFailure(session, "browser_fill", "Fill failed", err.message, target);
     return {
       success: false,
       error_code: isStale ? "STALE_ELEMENT_REFERENCE" : "COMMAND_FAILED",
@@ -638,12 +779,14 @@ export async function executeCheck(
 ): Promise<StandardToolResponse<{ target: string; isChecked: boolean }>> {
   const startTime = Date.now();
   const page = browserManager.getActivePage(session);
+  emitBrowserActionStart(session, "browser_check", `Checking ${target.ref ? `[ref=${target.ref}]` : target.selector || "element"}`, { ...target, checked });
 
   let selector: string;
   try {
     selector = resolveTarget(session, target);
   } catch (err: any) {
     const isStale = err.code === "STALE_ELEMENT_REFERENCE";
+    emitBrowserActionFailure(session, "browser_check", "Target resolution failed", err.message, target);
     return {
       success: false,
       error_code: isStale ? "STALE_ELEMENT_REFERENCE" : "INVALID_ARGUMENT",
@@ -674,6 +817,7 @@ export async function executeCheck(
     const passed = isChecked === checked;
 
     if (!passed) {
+      emitBrowserActionFailure(session, "browser_check", "DOM checked readback mismatch", `Expected ${checked}, found ${isChecked}`, target);
       return {
         success: false,
         error_code: "ELEMENT_NOT_EDITABLE",
@@ -694,6 +838,8 @@ export async function executeCheck(
         durationMs: Date.now() - startTime,
       };
     }
+
+    emitBrowserActionComplete(session, "browser_check", "Checkbox verified", { checked: isChecked, method: "dom_isChecked_readback" }, target);
 
     return {
       success: true,
@@ -720,6 +866,7 @@ export async function executeCheck(
     };
   } catch (err: any) {
     const isStale = err.code === "STALE_ELEMENT_REFERENCE" || err.message?.includes("STALE_ELEMENT_REFERENCE");
+    emitBrowserActionFailure(session, "browser_check", "Check failed", err.message, target);
     return {
       success: false,
       error_code: isStale ? "STALE_ELEMENT_REFERENCE" : "COMMAND_FAILED",
@@ -746,11 +893,13 @@ export async function executeSelect(
 ): Promise<StandardToolResponse<{ target: string; selectedValue: string }>> {
   const startTime = Date.now();
   const page = browserManager.getActivePage(session);
+  emitBrowserActionStart(session, "browser_select", `Selecting option in ${target.ref ? `[ref=${target.ref}]` : target.selector || "element"}`, { ...target, value });
   let selector: string;
   try {
     selector = resolveTarget(session, target);
   } catch (err: any) {
     const isStale = err.code === "STALE_ELEMENT_REFERENCE";
+    emitBrowserActionFailure(session, "browser_select", "Target resolution failed", err.message, target);
     return {
       success: false,
       error_code: isStale ? "STALE_ELEMENT_REFERENCE" : "INVALID_ARGUMENT",
@@ -766,6 +915,7 @@ export async function executeSelect(
     const locator = page.locator(selector).first();
     await locator.selectOption(value);
     const actual = await locator.inputValue();
+    emitBrowserActionComplete(session, "browser_select", "Select option complete", { selectedValue: actual }, target);
     return {
       success: true,
       action: `browser_select "${value}"`,
@@ -783,6 +933,7 @@ export async function executeSelect(
       durationMs: Date.now() - startTime,
     };
   } catch (err: any) {
+    emitBrowserActionFailure(session, "browser_select", "Select option failed", err.message, target);
     return {
       success: false,
       error_code: "COMMAND_FAILED",
@@ -802,11 +953,13 @@ export async function executeUpload(
 ): Promise<StandardToolResponse<{ target: string; files: string[] }>> {
   const startTime = Date.now();
   const page = browserManager.getActivePage(session);
+  emitBrowserActionStart(session, "browser_upload", `Uploading file to ${target.ref ? `[ref=${target.ref}]` : target.selector || "element"}`, { ...target, filePaths });
   let selector: string;
   try {
     selector = resolveTarget(session, target);
   } catch (err: any) {
     const isStale = err.code === "STALE_ELEMENT_REFERENCE";
+    emitBrowserActionFailure(session, "browser_upload", "Target resolution failed", err.message, target);
     return {
       success: false,
       error_code: isStale ? "STALE_ELEMENT_REFERENCE" : "INVALID_ARGUMENT",
@@ -821,6 +974,7 @@ export async function executeUpload(
   try {
     const locator = page.locator(selector).first();
     await locator.setInputFiles(filePaths);
+    emitBrowserActionComplete(session, "browser_upload", "File upload complete", { filePaths }, target);
     return {
       success: true,
       action: `browser_upload`,
@@ -833,6 +987,7 @@ export async function executeUpload(
       durationMs: Date.now() - startTime,
     };
   } catch (err: any) {
+    emitBrowserActionFailure(session, "browser_upload", "File upload failed", err.message, target);
     return {
       success: false,
       error_code: "COMMAND_FAILED",
@@ -852,6 +1007,7 @@ export async function executePressKey(
 ): Promise<StandardToolResponse<{ key: string }>> {
   const startTime = Date.now();
   const page = browserManager.getActivePage(session);
+  emitBrowserActionStart(session, "browser_press_key", `Pressing key "${key}"`, target);
   try {
     if (target && (target.ref || target.selector)) {
       const selector = resolveTarget(session, target);
@@ -859,6 +1015,7 @@ export async function executePressKey(
     } else {
       await page.keyboard.press(key);
     }
+    emitBrowserActionComplete(session, "browser_press_key", `Key "${key}" pressed`, { key }, target);
     return {
       success: true,
       action: `browser_press_key "${key}"`,
@@ -877,6 +1034,7 @@ export async function executePressKey(
     };
   } catch (err: any) {
     const isStale = err.code === "STALE_ELEMENT_REFERENCE" || err.message?.includes("STALE_ELEMENT_REFERENCE");
+    emitBrowserActionFailure(session, "browser_press_key", "Key press failed", err.message, target);
     return {
       success: false,
       error_code: isStale ? "STALE_ELEMENT_REFERENCE" : "COMMAND_FAILED",
@@ -900,8 +1058,10 @@ export async function executeEval(
 ): Promise<StandardToolResponse<{ result: any }>> {
   const startTime = Date.now();
   const page = browserManager.getActivePage(session);
+  emitBrowserActionStart(session, "browser_eval", "Evaluating JavaScript expression");
   try {
     const result = await page.evaluate(script);
+    emitBrowserActionComplete(session, "browser_eval", "JavaScript evaluated", { hasResult: result !== undefined }, undefined, false);
     return {
       success: true,
       action: `browser_eval`,
@@ -914,6 +1074,7 @@ export async function executeEval(
       durationMs: Date.now() - startTime,
     };
   } catch (err: any) {
+    emitBrowserActionFailure(session, "browser_eval", "Evaluation failed", err.message);
     return {
       success: false,
       error_code: "COMMAND_FAILED",
@@ -933,9 +1094,11 @@ export async function executePdf(
   const startTime = Date.now();
   const page = browserManager.getActivePage(session);
   const targetPath = outputPath || path.join(os.tmpdir(), `verity_doc_${randomUUID().slice(0, 8)}.pdf`);
+  emitBrowserActionStart(session, "browser_pdf", "Generating page PDF", { targetPath });
   try {
     await page.pdf({ path: targetPath, format: "A4" });
     const stat = await fs.stat(targetPath);
+    emitBrowserActionComplete(session, "browser_pdf", "PDF generated and verified", { sizeBytes: stat.size, filePath: targetPath });
     return {
       success: true,
       action: "browser_pdf",
@@ -948,6 +1111,7 @@ export async function executePdf(
       durationMs: Date.now() - startTime,
     };
   } catch (err: any) {
+    emitBrowserActionFailure(session, "browser_pdf", "PDF generation failed", err.message);
     return {
       success: false,
       error_code: "COMMAND_FAILED",
@@ -976,6 +1140,7 @@ export async function executeWaitFor(
   const startTime = Date.now();
   const page = browserManager.getActivePage(session);
   const timeout = options.timeoutMs || 10000;
+  emitBrowserActionStart(session, "browser_wait_for", `Waiting for condition: ${options.url || options.text || options.ref || options.selector || "networkidle"}`);
 
   try {
     let waitedFor = "";
@@ -1003,6 +1168,7 @@ export async function executeWaitFor(
     }
 
     const elapsed = Date.now() - startTime;
+    emitBrowserActionComplete(session, "browser_wait_for", "Wait condition satisfied", { waitedFor, elapsedMs: elapsed });
     return {
       success: true,
       action: `browser_wait_for (${waitedFor})`,
@@ -1023,6 +1189,7 @@ export async function executeWaitFor(
     const isTimeout = err.name === "TimeoutError" || err.message?.includes("Timeout");
     const isStale = err.code === "STALE_ELEMENT_REFERENCE";
     const errorCode = isStale ? "STALE_ELEMENT_REFERENCE" : isTimeout ? "PROCESS_TIMEOUT" : "COMMAND_FAILED";
+    emitBrowserActionFailure(session, "browser_wait_for", "Wait failed", err.message);
     return {
       success: false,
       error_code: errorCode,
@@ -1047,12 +1214,14 @@ export async function executeTraceStart(
   options: { screenshots?: boolean; snapshots?: boolean } = {}
 ): Promise<StandardToolResponse<{ isTracing: boolean }>> {
   const startTime = Date.now();
+  emitBrowserActionStart(session, "browser_trace_start", "Starting Playwright trace recording");
   try {
     await session.context.tracing.start({
       screenshots: options.screenshots !== false,
       snapshots: options.snapshots !== false,
     });
     session.isTracing = true;
+    emitBrowserActionComplete(session, "browser_trace_start", "Trace recording started", undefined, undefined, false);
     return {
       success: true,
       action: "browser_trace_start",
@@ -1069,6 +1238,7 @@ export async function executeTraceStart(
       durationMs: Date.now() - startTime,
     };
   } catch (err: any) {
+    emitBrowserActionFailure(session, "browser_trace_start", "Trace start failed", err.message);
     return {
       success: false,
       error_code: "COMMAND_FAILED",
@@ -1092,6 +1262,7 @@ export async function executeTraceStop(
 ): Promise<StandardToolResponse<{ tracePath: string; sizeBytes: number; requested_path?: string; resolved_path?: string }>> {
   const startTime = Date.now();
   if (!session.isTracing) {
+    emitBrowserActionFailure(session, "browser_trace_stop", "Trace stop failed", "Tracing is not active");
     return {
       success: false,
       error_code: "INVALID_ARGUMENT",
@@ -1114,6 +1285,8 @@ export async function executeTraceStop(
     ? (path.isAbsolute(outputPath) ? path.resolve(outputPath) : path.resolve(workspaceRoot, outputPath))
     : path.join(os.tmpdir(), `verity_trace_${randomUUID().slice(0, 8)}.zip`);
 
+  emitBrowserActionStart(session, "browser_trace_stop", "Stopping Playwright trace recording", { outputPath: requestedPath });
+
   try {
     await fs.mkdir(path.dirname(resolvedPath), { recursive: true });
     await session.context.tracing.stop({ path: resolvedPath });
@@ -1122,6 +1295,7 @@ export async function executeTraceStop(
     // Verify trace file exists on disk
     const verifyRes = await verifyFileExistence(resolvedPath, true);
     if (!verifyRes.passed) {
+      emitBrowserActionFailure(session, "browser_trace_stop", "Trace file verification failed", `Not found at ${resolvedPath}`);
       return {
         success: false,
         error_code: "TRACE_WRITE_FAILED",
@@ -1137,6 +1311,8 @@ export async function executeTraceStop(
 
     const stat = await fs.stat(resolvedPath);
     const withinWorkspace = resolvedPath.toLowerCase().startsWith(workspaceRoot.toLowerCase());
+
+    emitBrowserActionComplete(session, "browser_trace_stop", "Trace archive saved and verified", { resolvedPath, sizeBytes: stat.size });
 
     return {
       success: true,
@@ -1166,6 +1342,7 @@ export async function executeTraceStop(
     };
   } catch (err: any) {
     session.isTracing = false;
+    emitBrowserActionFailure(session, "browser_trace_stop", "Trace stop failed", err.message);
     return {
       success: false,
       error_code: "TRACE_WRITE_FAILED",
@@ -1189,6 +1366,7 @@ export async function executeListTabs(
   session: BrowserSession
 ): Promise<StandardToolResponse<{ tabs: Array<{ index: number; url: string; title: string; isActive: boolean }> }>> {
   const startTime = Date.now();
+  emitBrowserActionStart(session, "browser_list_tabs", "Listing open tabs");
   const tabInfos: Array<{ index: number; url: string; title: string; isActive: boolean }> = [];
   for (let i = 0; i < session.pages.length; i++) {
     const p = session.pages[i];
@@ -1207,6 +1385,8 @@ export async function executeListTabs(
   const lines = tabInfos.map(
     (t) => `Tab #${t.index}${t.isActive ? " [ACTIVE]" : ""}: "${t.title || "(No Title)"}" (${t.url})`
   );
+
+  emitBrowserActionComplete(session, "browser_list_tabs", "Tab list retrieved", { count: tabInfos.length });
 
   return {
     success: true,
@@ -1230,6 +1410,7 @@ export function executeGetConsole(
   session: BrowserSession,
   options?: { level?: string; filter?: string; limit?: number }
 ): StandardToolResponse<{ logs: Array<{ type: string; text: string; timestamp: number }> }> {
+  emitBrowserActionStart(session, "browser_console", "Reading browser console logs");
   let logs = [...session.consoleLogs];
   if (options?.level) {
     const lvl = options.level.toLowerCase();
@@ -1245,6 +1426,7 @@ export function executeGetConsole(
 
   const lines = logs.map((l) => `[${l.type.toUpperCase()}] ${l.text}`);
   const text = logs.length > 0 ? `Captured Console Logs (${logs.length}):\n${lines.join("\n")}` : "No console logs matched filter.";
+  emitBrowserActionComplete(session, "browser_console", "Console logs retrieved", { count: logs.length });
   return {
     success: true,
     action: "browser_console",
@@ -1261,6 +1443,7 @@ export function executeGetNetwork(
   session: BrowserSession,
   options?: { status?: number; failedOnly?: boolean; urlPattern?: string; resourceType?: string; limit?: number }
 ): StandardToolResponse<{ events: Array<{ method: string; url: string; status?: number; resourceType?: string; failed?: boolean }> }> {
+  emitBrowserActionStart(session, "browser_network", "Reading browser network logs");
   let events = [...session.networkEvents];
   if (options?.failedOnly) {
     events = events.filter((e) => Boolean(e.failed));
@@ -1284,6 +1467,7 @@ export function executeGetNetwork(
     (e) => `[${e.method}] ${e.url} ${e.failed ? "(FAILED)" : e.status ? `(HTTP ${e.status})` : ""} [${e.resourceType || "other"}]`
   );
   const text = events.length > 0 ? `Captured Network Events (${events.length}):\n${lines.join("\n")}` : "No network events matched filter.";
+  emitBrowserActionComplete(session, "browser_network", "Network logs retrieved", { count: events.length });
   return {
     success: true,
     action: "browser_network",

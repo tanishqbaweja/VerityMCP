@@ -67,7 +67,11 @@ import {
   executeRevertChanges,
 } from "../git/git_ops.js";
 import { taskStore } from "../tasks/task_store.js";
-import { activityStream } from "../observability/activity_stream.js";
+import {
+  activityStream,
+  activityContextStorage,
+  type ActivityCallContext,
+} from "../observability/activity_stream.js";
 import { detectEnvironment } from "../environment/env_detector.js";
 import { observabilityManager } from "../observability/diagnostics.js";
 
@@ -86,53 +90,338 @@ All filesystem mutations, patch applications, git reverts, process executions, b
     }
   );
 
+  const SELF_INSTRUMENTING_TOOLS = new Set([
+    "write_file",
+    "edit_file",
+    "delete_file",
+    "move_file",
+    "copy_file",
+    "apply_patch",
+    "exec_command",
+    "start_process",
+    "open_workspace",
+    "browser_navigate",
+    "browser_reload",
+    "browser_go_back",
+    "browser_go_forward",
+    "browser_click",
+    "browser_dblclick",
+    "browser_hover",
+    "browser_fill",
+    "browser_check",
+    "browser_select",
+    "browser_upload",
+    "browser_press_key",
+    "browser_eval",
+    "browser_pdf",
+    "browser_wait_for",
+    "browser_trace_start",
+    "browser_trace_stop",
+    "browser_list_tabs",
+    "browser_get_console",
+    "browser_get_network",
+    "browser_snapshot",
+    "browser_screenshot",
+    "desktop_screenshot",
+    "list_windows",
+    "focus_window",
+  ]);
+
+  const STREAM_OBSERVABILITY_TOOLS = new Set([
+    "activity_list",
+    "activity_read",
+    "activity_clear",
+    "activity_monitor",
+    "verity_diagnostics",
+  ]);
+
+  function formatToolDisplayTitle(toolName: string, args: any): string {
+    switch (toolName) {
+      case "read_file":
+        return `Reading ${args?.file_path || args?.path || "file"}`;
+      case "write_file":
+        return `Writing ${args?.file_path || args?.path || "file"}`;
+      case "edit_file":
+        return `Editing ${args?.file_path || args?.path || "file"}`;
+      case "delete_file":
+        return `Deleting ${args?.file_path || args?.path || "file"}`;
+      case "move_file":
+        return `Moving ${args?.source_path || args?.source} -> ${args?.destination_path || args?.destination}`;
+      case "copy_file":
+        return `Copying ${args?.source_path || args?.source} -> ${args?.destination_path || args?.destination}`;
+      case "list_directory":
+        return `Listing directory ${args?.dir_path || args?.path || "."}`;
+      case "locate_files":
+        return `Locating files matching "${args?.pattern || args?.glob || "*"}"`;
+      case "file_metadata":
+        return `Inspecting metadata of ${args?.file_path || args?.path || "file"}`;
+      case "apply_patch":
+        return `Applying unified patch`;
+      case "search_code":
+        return `Searching code for "${args?.query || args?.pattern || ""}"`;
+      case "get_outline":
+        return `Extracting symbols outline for ${args?.file_path || args?.path || "file"}`;
+      case "lsp_command":
+        return `LSP query: ${args?.command || "action"}`;
+      case "exec_command":
+        return `Running command: ${args?.command || ""}`;
+      case "start_process":
+        return `Starting background process: ${args?.command || ""}`;
+      case "read_process_output":
+        return `Reading output of process: ${args?.process_id || ""}`;
+      case "send_process_input":
+        return `Sending stdin to process: ${args?.process_id || ""}`;
+      case "stop_process":
+        return `Stopping process: ${args?.process_id || ""}`;
+      case "list_processes":
+        return "Listing background processes";
+      case "browser_navigate":
+        return `Navigating to ${args?.url || "URL"}`;
+      case "browser_snapshot":
+        return "Inspecting browser DOM & accessibility snapshot";
+      case "browser_click":
+        return `Clicking ${args?.ref || args?.selector || "element"}`;
+      case "browser_dblclick":
+        return `Double-clicking ${args?.ref || args?.selector || "element"}`;
+      case "browser_hover":
+        return `Hovering ${args?.ref || args?.selector || "element"}`;
+      case "browser_fill":
+        return `Filling input ${args?.ref || args?.selector || "element"}`;
+      case "browser_check":
+        return `Checking ${args?.ref || args?.selector || "element"}`;
+      case "browser_select":
+        return `Selecting option in ${args?.ref || args?.selector || "element"}`;
+      case "browser_upload":
+        return `Uploading files to ${args?.ref || args?.selector || "element"}`;
+      case "browser_press_key":
+        return `Pressing key "${args?.key || ""}"`;
+      case "browser_screenshot":
+        return `Capturing browser screenshot`;
+      case "desktop_screenshot":
+        return "Capturing desktop screenshot";
+      case "read_notebook":
+        return `Reading Jupyter notebook ${args?.file_path || args?.path || ""}`;
+      case "edit_notebook":
+        return `Editing cell in Jupyter notebook ${args?.file_path || args?.path || ""}`;
+      case "git_status":
+        return "Checking Git status & working tree";
+      case "git_diff":
+        return "Checking Git diff";
+      case "git_revert":
+        return `Reverting changes for ${args?.paths?.join(", ") || "all modified files"}`;
+      case "open_workspace":
+        return `Opening workspace ${args?.path || "."}`;
+      default:
+        return toolName.replace(/_/g, " ");
+    }
+  }
+
+  function formatDefaultPurpose(toolName: string, args: any): string {
+    switch (toolName) {
+      case "read_file":
+        return `Inspect contents and verify SHA-256 hash of ${args?.file_path || args?.path || "file"}`;
+      case "write_file":
+        return `Write content to disk and verify SHA-256 readback`;
+      case "edit_file":
+        return `Apply exact text replacement and verify disk readback SHA-256`;
+      case "delete_file":
+        return `Remove file from filesystem with post-deletion verification`;
+      case "move_file":
+        return `Move file atomically and verify existence at target`;
+      case "copy_file":
+        return `Copy file and verify byte equality`;
+      case "list_directory":
+        return `Inspect directory entries and file tree structure`;
+      case "locate_files":
+        return `Find matching files in workspace`;
+      case "file_metadata":
+        return `Retrieve file stats, permissions, and timestamps`;
+      case "apply_patch":
+        return `Apply patch with hunk verification`;
+      case "search_code":
+        return `Find code occurrences matching query pattern`;
+      case "get_outline":
+        return `Extract structured symbols and AST outline`;
+      case "lsp_command":
+        return `Query language server protocol diagnostics or definitions`;
+      case "exec_command":
+        return `Execute shell command and capture verified exit code and output`;
+      case "start_process":
+        return `Spawn long-running background process session`;
+      case "read_process_output":
+        return `Retrieve buffered process stdout/stderr using cursor pagination`;
+      case "send_process_input":
+        return `Send input to active process session`;
+      case "stop_process":
+        return `Terminate process session`;
+      case "list_processes":
+        return `Inspect active and retained background process sessions`;
+      case "browser_navigate":
+        return `Navigate active browser session to URL`;
+      case "browser_snapshot":
+        return `Capture fresh accessibility tree and element ref map`;
+      case "browser_click":
+        return `Click interactive element and verify DOM effect`;
+      case "browser_fill":
+        return `Fill form control and verify DOM input value`;
+      case "browser_check":
+        return `Toggle checkbox/radio control and verify checked state`;
+      case "browser_screenshot":
+        return `Capture verified visual viewport screenshot`;
+      case "desktop_screenshot":
+        return `Capture full desktop display screen`;
+      case "read_notebook":
+        return `Read Jupyter notebook structure and cells`;
+      case "edit_notebook":
+        return `Modify notebook cell while preserving formatting`;
+      case "git_status":
+        return `Inspect Git branch, staged, and unstaged changes`;
+      case "git_diff":
+        return `Inspect Git diff patches against HEAD`;
+      case "git_revert":
+        return `Revert modified files and verify clean Git tree`;
+      case "open_workspace":
+        return `Bootstrap workspace environment, map architecture, and discover skills`;
+      default:
+        return `Execute ${toolName} operation`;
+    }
+  }
+
+  function extractToolTarget(args: any): Record<string, unknown> | string | undefined {
+    if (!args || typeof args !== "object") return undefined;
+    if (args.file_path) return args.file_path;
+    if (args.path) return args.path;
+    if (args.url) return args.url;
+    if (args.command) return args.command;
+    if (args.selector) return args.selector;
+    if (args.ref) return args.ref;
+    if (args.query) return args.query;
+    if (args.process_id) return args.process_id;
+    if (args.session_id) return args.session_id;
+    return undefined;
+  }
+
   const registerTool = (
     name: string,
     description: string,
     shape: Record<string, z.ZodTypeAny> | z.ZodTypeAny,
     handler: (args: any) => Promise<McpToolResponse>
   ) => {
-    const inputSchema = (shape instanceof z.ZodType ? shape : z.object(shape)) as any;
+    const purposeField = z.string().optional().describe("Concise operational reason why this action is being performed right now (for user live activity stream).");
+    const expectedOutcomeField = z.string().optional().describe("What system state or result is expected if this action succeeds.");
+
+    let inputSchema: any;
+    if (shape instanceof z.ZodObject) {
+      inputSchema = shape.extend({
+        purpose: purposeField,
+        expected_outcome: expectedOutcomeField,
+      });
+    } else if (shape instanceof z.ZodType) {
+      inputSchema = shape;
+    } else {
+      inputSchema = z.object({
+        ...shape,
+        purpose: purposeField,
+        expected_outcome: expectedOutcomeField,
+      });
+    }
+
     server.registerTool(name, { description, inputSchema } as any, async (args: any): Promise<any> => {
       const startTime = Date.now();
-      try {
-        const response = await handler(args);
-        const structured = response._structured;
-        const success = structured ? structured.success : !response.isError;
-        const errorCode = structured?.error_code;
-        const verificationPassed = structured?.execution_verification?.status === "passed" && structured?.state_verification?.status !== "failed";
-        observabilityManager.logToolEvent({
-          toolName: name,
-          action: structured?.action || name,
-          success,
-          errorCode,
-          verificationPassed,
-          durationMs: Date.now() - startTime,
-          timestamp: Date.now(),
-        });
-        return response;
-      } catch (err: any) {
-        observabilityManager.logToolEvent({
-          toolName: name,
-          action: name,
-          success: false,
-          errorCode: "TOOL_ERROR",
-          durationMs: Date.now() - startTime,
-          timestamp: Date.now(),
-        });
-        return formatMcpResponse({
-          success: false,
-          action: name,
-          text: `Tool execution error: ${err.message}`,
-          verification: {
-            performed: true,
-            passed: false,
-            method: "mcp_tool_runner",
-            error: err.message,
-          },
-          durationMs: Date.now() - startTime,
-        });
-      }
+      const callId = activityStream.generateCallId();
+      const callerPurpose = typeof args?.purpose === "string" && args.purpose.trim() ? args.purpose.trim() : undefined;
+      const callerExpectedOutcome = typeof args?.expected_outcome === "string" && args.expected_outcome.trim() ? args.expected_outcome.trim() : undefined;
+      const displayTitle = formatToolDisplayTitle(name, args);
+      const purpose = callerPurpose || formatDefaultPurpose(name, args);
+      const purposeSource = callerPurpose ? "caller" : "tool_default";
+      const target = extractToolTarget(args);
+
+      const callCtx: ActivityCallContext = {
+        callId,
+        toolName: name,
+        displayTitle,
+        purpose,
+        purposeSource,
+        expectedOutcome: callerExpectedOutcome,
+        target,
+        workspaceId: workspaceManager.getActiveWorkspaceRoot() || undefined,
+        args,
+      };
+
+      return activityContextStorage.run(callCtx, async () => {
+        const isSelfInstrumenting = SELF_INSTRUMENTING_TOOLS.has(name);
+        const isObservability = STREAM_OBSERVABILITY_TOOLS.has(name);
+
+        if (!isSelfInstrumenting && !isObservability) {
+          activityStream.emit({
+            type: "action_started",
+            title: displayTitle,
+            status: "running",
+            target,
+          });
+        }
+
+        try {
+          const response = await handler(args);
+          const structured = response._structured;
+          const success = structured ? structured.success : !response.isError;
+          const errorCode = structured?.error_code;
+          const verificationPassed =
+            structured?.execution_verification?.status === "passed" &&
+            structured?.state_verification?.status !== "failed";
+
+          if (!isSelfInstrumenting && !isObservability) {
+            activityStream.emit({
+              type: success ? "action_completed" : "failure",
+              title: `${displayTitle} ${success ? "completed" : "failed"}`,
+              status: success ? (verificationPassed ? "verified" : "completed") : "failed",
+              target,
+              reason: errorCode || (!success ? (structured?.summary || "Action failed") : undefined),
+            });
+          }
+
+          observabilityManager.logToolEvent({
+            toolName: name,
+            action: structured?.action || name,
+            success,
+            errorCode,
+            verificationPassed,
+            durationMs: Date.now() - startTime,
+            timestamp: Date.now(),
+          });
+          return response;
+        } catch (err: any) {
+          if (!isObservability) {
+            activityStream.emit({
+              type: "failure",
+              title: `${displayTitle}: ${err.message}`,
+              status: "failed",
+              reason: err.message,
+            });
+          }
+
+          observabilityManager.logToolEvent({
+            toolName: name,
+            action: name,
+            success: false,
+            errorCode: "TOOL_ERROR",
+            durationMs: Date.now() - startTime,
+            timestamp: Date.now(),
+          });
+          return formatMcpResponse({
+            success: false,
+            action: name,
+            text: `Tool execution error: ${err.message}`,
+            verification: {
+              performed: true,
+              passed: false,
+              method: "mcp_tool_runner",
+              error: err.message,
+            },
+            durationMs: Date.now() - startTime,
+          });
+        }
+      });
     });
   };
 
@@ -1380,6 +1669,50 @@ All filesystem mutations, patch applications, git reverts, process executions, b
         text: `Cleared ${cleared.cleared_count} activity stream events.`,
         data: cleared,
         verification: { performed: true, passed: true, method: "activity_stream_clear" },
+      });
+    }
+  );
+
+  // 63. activity_monitor
+  registerTool(
+    "activity_monitor",
+    "Returns live execution status, current action in flight with WHY/target, recent events summary, and user-facing Live Activity Monitor UI URL (e.g. http://localhost:port/monitor).",
+    {
+      limit: z.number().int().positive().optional().describe("Number of recent events to include in summary. Defaults to 10."),
+    },
+    async ({ limit }) => {
+      const port = config.port || 3000;
+      const monitorUrl = `http://localhost:${port}/monitor`;
+      const currentAction = activityStream.getCurrentAction();
+      const recent = activityStream.read({ limit: limit ?? 10 });
+      const totalRetained = activityStream.size();
+
+      const summaryLines = [
+        `Live Activity Monitor: ${monitorUrl}`,
+        `Server State: ${currentAction ? "WORKING" : "IDLE"}`,
+        currentAction
+          ? `Current Action: ${currentAction.display_title || currentAction.title} [${currentAction.status || "running"}]${currentAction.purpose ? ` (Why: ${currentAction.purpose})` : ""}${currentAction.target ? ` | Target: ${typeof currentAction.target === "object" ? JSON.stringify(currentAction.target) : currentAction.target}` : ""}`
+          : "Current Action: None (idle / waiting for agent instruction)",
+        `Total Retained Events: ${totalRetained}`,
+        `Recent Events (${recent.events.length}):`,
+        ...recent.events.map((e) => `  [#${e.seq}] [${e.type}] ${e.display_title || e.title}${e.purpose ? ` (Why: ${e.purpose})` : ""}${e.status ? ` - ${e.status}` : ""}`),
+      ];
+
+      return formatMcpResponse({
+        success: true,
+        action: "activity_monitor",
+        display_title: "Activity Monitor Status",
+        display_status: currentAction ? "running" : "completed",
+        text: summaryLines.join("\n"),
+        data: {
+          monitor_url: monitorUrl,
+          sse_stream_url: `http://localhost:${port}/activity/stream`,
+          poll_events_url: `http://localhost:${port}/activity/events`,
+          current_action: currentAction,
+          total_retained: totalRetained,
+          recent_events: recent.events,
+        },
+        verification: { performed: true, passed: true, method: "activity_stream_monitor" },
       });
     }
   );

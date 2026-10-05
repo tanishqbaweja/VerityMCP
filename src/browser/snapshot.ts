@@ -1,4 +1,5 @@
 import { browserManager, type BrowserSession } from "./browser_manager.js";
+import { activityStream } from "../observability/activity_stream.js";
 import type { StandardToolResponse } from "../types/index.js";
 
 export interface ElementSnapshotInfo {
@@ -393,6 +394,17 @@ export async function takeBrowserSnapshot(
     };
   }
 
+  activityStream.emit({
+    type: "action_started",
+    tool: "browser_snapshot",
+    title: "Inspecting current page",
+    display_title: "Inspecting current page",
+    purpose: "Inspect current page structure and interactive elements.",
+    target: { session_id: session.id, url },
+    browser_session_id: session.id,
+    status: "running",
+  });
+
   // Preserve previous snapshot references in refHistory for accurate stale detection
   for (const [ref, info] of session.elementRefs.entries()) {
     session.refHistory.set(ref, {
@@ -470,6 +482,21 @@ export async function takeBrowserSnapshot(
   });
 
   const snapshotText = lines.join("\n");
+
+  activityStream.emit({
+    type: "verification",
+    tool: "browser_snapshot",
+    title: "Snapshot complete",
+    display_title: "Snapshot complete",
+    target: { session_id: session.id, url },
+    evidence: {
+      interactiveElements: snapshotElements.length,
+      version: currentVersion,
+      generation: session.documentGeneration,
+    },
+    browser_session_id: session.id,
+    status: "verified",
+  });
 
   return {
     success: true,

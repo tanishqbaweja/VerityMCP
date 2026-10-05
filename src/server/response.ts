@@ -1,4 +1,5 @@
 import type { StandardToolResponse } from "../types/index.js";
+import { activityContextStorage } from "../observability/activity_stream.js";
 
 export type McpContentItem =
   | { type: "text"; text: string }
@@ -67,28 +68,44 @@ export function formatMcpResponse<T = unknown>(
     lines.push(`\n--- STDERR ---\n${res.stderr}`);
   }
 
-  // Call ID & Display status
-  const callId = res.call_id || `call_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
-  const displayTitle = res.display_title || res.action;
+  // Active execution context & Call ID
+  const ctx = activityContextStorage.getStore();
+  const callId = res.call_id || ctx?.callId || `call_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+  const displayTitle = res.display_title || ctx?.displayTitle || res.action;
+  const purpose = res.purpose || ctx?.purpose;
+  const purposeSource = res.purpose_source || ctx?.purposeSource || (purpose ? "tool_default" : undefined);
+  const expectedOutcome = res.expected_outcome || ctx?.expectedOutcome;
+  const target = res.target || ctx?.target;
   const displayStatus =
     res.display_status ||
     (res.success
       ? (res.verification?.passed || execVerification?.status === "passed") ? "verified" : "completed"
       : "failed");
 
-  // Warnings
-  const warnings: string[] = [];
-  if (res.warning) warnings.push(res.warning);
-  if (res.warnings) warnings.push(...res.warnings);
-  if (res.stderr_present && res.success && res.stderr?.trim()) {
-    warnings.push("Command emitted stderr despite exit code 0.");
+  // Prominent user-visible operational intent badge
+  if (purpose || displayTitle) {
+    const purposeText = purpose ? ` | Why: ${purpose}` : "";
+    lines.unshift(`[Verity Activity: ${displayTitle}${purposeText}]`);
   }
+
+  // Deduplicated warnings
+  const rawWarnings: string[] = [];
+  if (res.warning) rawWarnings.push(res.warning);
+  if (res.warnings) rawWarnings.push(...res.warnings);
+  if (res.stderr_present && res.success && res.stderr?.trim()) {
+    rawWarnings.push("Command emitted stderr despite exit code 0.");
+  }
+  const warnings = Array.from(new Set(rawWarnings));
 
   // Machine-readable structured payload for autonomous agents
   const structuredPayload = {
     call_id: callId,
     display_title: displayTitle,
     display_status: warnings.length > 0 && res.success ? "warning" : displayStatus,
+    ...(purpose ? { purpose } : {}),
+    ...(purposeSource ? { purpose_source: purposeSource } : {}),
+    ...(expectedOutcome ? { expected_outcome: expectedOutcome } : {}),
+    ...(target ? { target } : {}),
     success: res.success,
     action: res.action,
     summary: res.summary || res.text?.split("\n")[0] || res.action,
