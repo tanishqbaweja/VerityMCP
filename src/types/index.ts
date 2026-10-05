@@ -121,6 +121,8 @@ export interface VerityConfig {
   allowedRoots: string[];
   worktreesDir: string;
   defaultShell?: string;
+  serverRoot?: string;
+  persistentDataRoot?: string;
 }
 
 export type ShellType = "bash" | "powershell" | "cmd" | "git-bash" | "wsl";

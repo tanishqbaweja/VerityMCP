@@ -1,4 +1,5 @@
 import os from "node:os";
+import fsSync from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import crypto from "node:crypto";
@@ -6,6 +7,13 @@ import { detectShells } from "../shell/shell_detector.js";
 import { workspaceManager } from "../workspace/workspace_manager.js";
 import { processManager } from "../shell/process_manager.js";
 import { browserManager } from "../browser/browser_manager.js";
+import {
+  getServerRoot,
+  getPersistentDataRoot,
+  getRunsDir,
+  getPersistentDiskUsageBytesSync,
+} from "../storage/paths.js";
+import { runManager } from "../runs/run_manager.js";
 import { executeGitStatus } from "../git/git_ops.js";
 import { executeBrowserSnapshot } from "../browser/snapshot.js";
 import { executeNavigate, executeClick } from "../browser/actions.js";
@@ -120,8 +128,46 @@ class ObservabilityManager {
         ? ((successfulCalls / verifiableOperations) * 100).toFixed(1) + "%"
         : "100.0%";
 
+    const serverRoot = getServerRoot();
+    const persistentDataRoot = getPersistentDataRoot();
+    const diskUsageBytes = getPersistentDiskUsageBytesSync();
+    const diskUsageMb = (diskUsageBytes / (1024 * 1024)).toFixed(1) + " MB";
+    const activeRun = runManager.getActiveRun();
+
+    let persistedRunsCount = 0;
+    let interruptedRunsCount = 0;
+    const runsDir = getRunsDir();
+    if (fsSync.existsSync(runsDir)) {
+      try {
+        const entries = fsSync.readdirSync(runsDir, { withFileTypes: true });
+        for (const e of entries) {
+          if (e.isDirectory()) {
+            persistedRunsCount++;
+            const runJson = path.join(runsDir, e.name, "run.json");
+            if (fsSync.existsSync(runJson)) {
+              try {
+                const rData = JSON.parse(fsSync.readFileSync(runJson, "utf-8"));
+                if (rData.status === "interrupted") {
+                  interruptedRunsCount++;
+                }
+              } catch {}
+            }
+          }
+        }
+      } catch {}
+    }
+
     const data = {
       version: "1.0.0",
+      storage: {
+        server_root: serverRoot,
+        persistent_data_root: persistentDataRoot,
+        active_run: activeRun?.run_id || null,
+        persisted_runs: persistedRunsCount,
+        interrupted_runs: interruptedRunsCount,
+        disk_usage_mb: (diskUsageBytes / (1024 * 1024)).toFixed(1),
+        disk_usage_bytes: diskUsageBytes,
+      },
       os: {
         platform: process.platform,
         release: os.release(),
@@ -210,6 +256,24 @@ class ObservabilityManager {
       `Version: 1.0.0`,
       `OS: ${process.platform} ${os.release()} (${process.arch})`,
       `Default Shell: ${shells.defaultShell}`,
+      `Server Root:`,
+      `${serverRoot}`,
+      ``,
+      `Persistent Data Root:`,
+      `${persistentDataRoot}`,
+      ``,
+      `Active Run:`,
+      `${activeRun?.run_id || "None"}`,
+      ``,
+      `Persisted Runs:`,
+      `${persistedRunsCount}`,
+      ``,
+      `Interrupted Runs:`,
+      `${interruptedRunsCount}`,
+      ``,
+      `Disk Usage:`,
+      `${diskUsageMb}`,
+      ``,
       `Shells:`,
       `  PowerShell: status=${shells.powershell.status || "healthy"}, version=${shells.powershell.version || "unknown"}, path=${shells.powershell.executable}`,
       `  cmd: status=${shells.cmd.status || "healthy"}, path=${shells.cmd.executable}`,

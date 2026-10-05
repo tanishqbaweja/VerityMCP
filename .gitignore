@@ -6,3 +6,4 @@ dist/
 *.jpg
 *.sqlite
 *.db
+.verity/
