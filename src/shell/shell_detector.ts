@@ -14,8 +14,211 @@ function fileExists(filePath?: string): boolean {
   }
 }
 
+function probeExecutable(
+  executable: string,
+  args: string[],
+  expectedSubstring?: string
+): { success: boolean; output: string } {
+  try {
+    const quoted = executable.includes(" ") ? `"${executable}"` : executable;
+    const cmd = `${quoted} ${args.join(" ")}`;
+    const output = execSync(cmd, {
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "pipe"],
+      timeout: 2500,
+      windowsHide: true,
+    }).trim();
+    if (expectedSubstring && !output.includes(expectedSubstring)) {
+      return { success: false, output };
+    }
+    return { success: true, output };
+  } catch (err: any) {
+    return { success: false, output: err.message || "" };
+  }
+}
+
+function findGitBashExecutable(): {
+  executable: string;
+  description: string;
+  version?: string;
+  healthy: boolean;
+} | null {
+  const isWin = process.platform === "win32";
+  if (!isWin) {
+    const probe = probeExecutable("bash", ["-c", '"printf ok"'], "ok");
+    if (probe.success) {
+      const verProbe = probeExecutable("bash", ["--version"]);
+      return {
+        executable: "bash",
+        description: "POSIX Bash",
+        version: verProbe.output.split(/\r?\n/)[0],
+        healthy: true,
+      };
+    }
+    return null;
+  }
+
+  const drives = ["C", "D", "E", "F", "G", "H"];
+  const staticCandidates: string[] = [];
+
+  for (const d of drives) {
+    staticCandidates.push(`${d}:\\Program Files\\Git\\bin\\bash.exe`);
+    staticCandidates.push(`${d}:\\Program Files\\Git\\usr\\bin\\bash.exe`);
+    staticCandidates.push(`${d}:\\Program Files (x86)\\Git\\bin\\bash.exe`);
+    staticCandidates.push(`${d}:\\Program Files (x86)\\Git\\usr\\bin\\bash.exe`);
+    staticCandidates.push(`${d}:\\Git\\bin\\bash.exe`);
+    staticCandidates.push(`${d}:\\Git\\usr\\bin\\bash.exe`);
+    staticCandidates.push(`${d}:\\msys64\\usr\\bin\\bash.exe`);
+    staticCandidates.push(`${d}:\\cygwin64\\bin\\bash.exe`);
+  }
+
+  if (process.env.LOCALAPPDATA) {
+    staticCandidates.push(path.join(process.env.LOCALAPPDATA, "Programs", "Git", "bin", "bash.exe"));
+    staticCandidates.push(path.join(process.env.LOCALAPPDATA, "Programs", "Git", "usr", "bin", "bash.exe"));
+  }
+  if (process.env.PROGRAMW6432) {
+    staticCandidates.push(path.join(process.env.PROGRAMW6432, "Git", "bin", "bash.exe"));
+    staticCandidates.push(path.join(process.env.PROGRAMW6432, "Git", "usr", "bin", "bash.exe"));
+  }
+
+  // Also query `where.exe git` to infer Git Bash location
+  try {
+    const whereGit = execSync("where.exe git", {
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 1500,
+    })
+      .trim()
+      .split(/\r?\n/);
+    for (const gPath of whereGit) {
+      if (fileExists(gPath)) {
+        const dir = path.dirname(gPath);
+        staticCandidates.push(path.resolve(dir, "..", "bin", "bash.exe"));
+        staticCandidates.push(path.resolve(dir, "..", "usr", "bin", "bash.exe"));
+      }
+    }
+  } catch {}
+
+  // Also query `where.exe bash` (ignoring System32 WSL shim)
+  try {
+    const whereBash = execSync("where.exe bash", {
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 1500,
+    })
+      .trim()
+      .split(/\r?\n/);
+    for (const bPath of whereBash) {
+      if (!bPath.toLowerCase().includes("system32") && fileExists(bPath)) {
+        staticCandidates.push(bPath);
+      }
+    }
+  } catch {}
+
+  const tested = new Set<string>();
+  for (const cand of staticCandidates) {
+    if (!cand || tested.has(cand.toLowerCase())) continue;
+    tested.add(cand.toLowerCase());
+
+    if (fileExists(cand)) {
+      const probe = probeExecutable(cand, ["-c", '"printf ok"'], "ok");
+      if (probe.success) {
+        const verProbe = probeExecutable(cand, ["--version"]);
+        const verLine = verProbe.output.split(/\r?\n/)[0] || "Git Bash";
+        const desc = cand.includes("msys64")
+          ? "MSYS2 Bash"
+          : cand.includes("cygwin")
+          ? "Cygwin Bash"
+          : "Git Bash (MSYS)";
+        return {
+          executable: cand,
+          description: desc,
+          version: verLine,
+          healthy: true,
+        };
+      }
+    }
+  }
+
+  return null;
+}
+
+function probeWsl(): {
+  available: boolean;
+  functional: boolean;
+  distro?: string;
+  reason?: string;
+  bashAvailable: boolean;
+} {
+  const isWin = process.platform === "win32";
+  if (!isWin) {
+    return { available: false, functional: false, bashAvailable: false, reason: "Non-Windows OS" };
+  }
+
+  try {
+    const wslExe = "C:\\Windows\\System32\\wsl.exe";
+    if (!fileExists(wslExe)) {
+      return { available: false, functional: false, bashAvailable: false, reason: "wsl.exe not found" };
+    }
+
+    const distrosOut = execSync(`${wslExe} -l -q`, {
+      encoding: "utf-16le",
+      stdio: ["ignore", "pipe", "ignore"],
+      timeout: 1500,
+    }).trim();
+
+    if (!distrosOut) {
+      return { available: false, functional: false, bashAvailable: false, reason: "No WSL distros installed" };
+    }
+
+    const distros = distrosOut.split(/\r?\n/).map((d) => d.trim()).filter(Boolean);
+    const defaultDistro = distros[0] || "unknown";
+
+    // Test if bash is actually installed and functional in the default distro
+    try {
+      const bashProbe = execSync(`${wslExe} bash -c "printf ok"`, {
+        encoding: "utf-8",
+        stdio: ["ignore", "pipe", "pipe"],
+        timeout: 2500,
+      }).trim();
+
+      if (bashProbe === "ok") {
+        return {
+          available: true,
+          functional: true,
+          distro: defaultDistro,
+          bashAvailable: true,
+        };
+      }
+    } catch {
+      return {
+        available: false,
+        functional: false,
+        distro: defaultDistro,
+        bashAvailable: false,
+        reason: `WSL default distro (${defaultDistro}) has no functional /bin/bash`,
+      };
+    }
+
+    return {
+      available: false,
+      functional: false,
+      distro: defaultDistro,
+      bashAvailable: false,
+      reason: "WSL bash probe did not return expected output",
+    };
+  } catch (err: any) {
+    return {
+      available: false,
+      functional: false,
+      bashAvailable: false,
+      reason: err.message || "WSL detection error",
+    };
+  }
+}
+
 /**
- * Probes for available shells on the system with Windows-first intelligence.
+ * Probes for available shells on the system with verified health checks.
  */
 export function detectShells(forceRefresh = false): DetectedShells {
   if (cachedShells && !forceRefresh) {
@@ -24,10 +227,12 @@ export function detectShells(forceRefresh = false): DetectedShells {
 
   const isWin = process.platform === "win32";
 
-  // 1. PowerShell Detection
+  // 1. PowerShell Detection & Probe
   let psExe = "powershell";
   let psAvailable = false;
   let psDesc = "PowerShell";
+  let psVer = "";
+  let psHealthy = false;
 
   if (isWin) {
     const pwsh7 = "C:\\Program Files\\PowerShell\\7\\pwsh.exe";
@@ -35,25 +240,33 @@ export function detectShells(forceRefresh = false): DetectedShells {
 
     if (fileExists(pwsh7)) {
       psExe = pwsh7;
-      psAvailable = true;
       psDesc = "PowerShell 7 (Core)";
     } else if (fileExists(winPs)) {
       psExe = winPs;
-      psAvailable = true;
       psDesc = "Windows PowerShell 5.1";
-    } else {
+    }
+
+    const psProbe = probeExecutable(psExe, ["-NoProfile", "-Command", '"Write-Output ok"'], "ok");
+    if (psProbe.success) {
+      psAvailable = true;
+      psHealthy = true;
       try {
-        execSync("powershell -NoProfile -Command \"$PSVersionTable.PSVersion\"", { stdio: "ignore" });
-        psAvailable = true;
+        const verOut = execSync(`"${psExe}" -NoProfile -Command "$PSVersionTable.PSVersion.ToString()"`, {
+          encoding: "utf-8",
+          stdio: ["ignore", "pipe", "ignore"],
+          timeout: 2000,
+        }).trim();
+        psVer = verOut;
       } catch {}
     }
   } else {
-    try {
-      execSync("which pwsh", { stdio: "ignore" });
+    const psProbe = probeExecutable("pwsh", ["-Command", '"Write-Output ok"'], "ok");
+    if (psProbe.success) {
       psExe = "pwsh";
       psAvailable = true;
+      psHealthy = true;
       psDesc = "PowerShell Core";
-    } catch {}
+    }
   }
 
   const powershellInfo: ShellInfo = {
@@ -61,9 +274,15 @@ export function detectShells(forceRefresh = false): DetectedShells {
     available: psAvailable,
     executable: psExe,
     description: psDesc,
+    version: psVer || undefined,
+    status: psHealthy ? "healthy" : "unavailable",
+    healthProbe: {
+      healthy: psHealthy,
+      version: psVer,
+    },
   };
 
-  // 2. CMD Detection
+  // 2. CMD Detection & Probe
   const cmdExe = process.env.COMSPEC || (isWin ? "C:\\Windows\\System32\\cmd.exe" : "sh");
   const cmdAvailable = isWin ? fileExists(cmdExe) : false;
   const cmdInfo: ShellInfo = {
@@ -71,97 +290,47 @@ export function detectShells(forceRefresh = false): DetectedShells {
     available: cmdAvailable,
     executable: cmdExe,
     description: "Windows Command Prompt (cmd.exe)",
+    status: cmdAvailable ? "healthy" : "unavailable",
+    healthProbe: {
+      healthy: cmdAvailable,
+    },
   };
 
-  // 3. Git Bash / Native POSIX Bash Detection
-  let gitBashExe = "";
-  let gitBashAvailable = false;
-  let gitBashDesc = "Git Bash";
-
-  if (isWin) {
-    const gitBashCandidates = [
-      "C:\\Program Files\\Git\\bin\\bash.exe",
-      "C:\\Program Files\\Git\\usr\\bin\\bash.exe",
-      "C:\\Program Files (x86)\\Git\\bin\\bash.exe",
-      "C:\\Git\\bin\\bash.exe",
-      process.env.LOCALAPPDATA
-        ? path.join(process.env.LOCALAPPDATA, "Programs", "Git", "bin", "bash.exe")
-        : "",
-      "C:\\msys64\\usr\\bin\\bash.exe",
-      "C:\\cygwin64\\bin\\bash.exe",
-    ].filter(Boolean);
-
-    for (const cand of gitBashCandidates) {
-      if (fileExists(cand)) {
-        gitBashExe = cand;
-        gitBashAvailable = true;
-        gitBashDesc = cand.includes("msys64")
-          ? "MSYS2 Bash"
-          : cand.includes("cygwin")
-          ? "Cygwin Bash"
-          : "Git Bash (MSYS)";
-        break;
-      }
-    }
-
-    if (!gitBashAvailable) {
-      // Check if `where.exe bash` points to a git installation rather than System32
-      try {
-        const whereOut = execSync("where.exe bash", { encoding: "utf-8" }).trim().split(/\r?\n/);
-        for (const outPath of whereOut) {
-          if (!outPath.toLowerCase().includes("system32") && fileExists(outPath)) {
-            gitBashExe = outPath;
-            gitBashAvailable = true;
-            gitBashDesc = "Bash (from PATH)";
-            break;
-          }
-        }
-      } catch {}
-    }
-  } else {
-    try {
-      execSync("which bash", { stdio: "ignore" });
-      gitBashExe = "bash";
-      gitBashAvailable = true;
-      gitBashDesc = "POSIX Bash";
-    } catch {}
-  }
-
+  // 3. Git Bash / POSIX Bash Detection & Probe
+  const gitBashFound = findGitBashExecutable();
   const gitBashInfo: ShellInfo = {
     type: "git-bash",
-    available: gitBashAvailable,
-    executable: gitBashExe,
-    description: gitBashDesc,
+    available: Boolean(gitBashFound?.healthy),
+    executable: gitBashFound?.executable || (isWin ? "" : "bash"),
+    description: gitBashFound?.description || (isWin ? "Git Bash (Not installed)" : "POSIX Bash"),
+    version: gitBashFound?.version,
+    status: gitBashFound?.healthy ? "healthy" : "unavailable",
+    healthProbe: {
+      healthy: Boolean(gitBashFound?.healthy),
+      version: gitBashFound?.version,
+    },
   };
 
-  // 4. WSL Bash Detection (Strict - do NOT assume working)
-  let wslAvailable = false;
-  let wslDesc = "WSL (Not installed/running)";
-
-  if (isWin) {
-    try {
-      // Check if wsl.exe exists and returns installed distros without error
-      const wslList = execSync("wsl.exe -l -q", { encoding: "utf-16le", stdio: ["ignore", "pipe", "ignore"], timeout: 1500 });
-      if (wslList && wslList.trim().length > 0) {
-        wslAvailable = true;
-        wslDesc = "Windows Subsystem for Linux (WSL)";
-      }
-    } catch {
-      wslAvailable = false;
-    }
-  }
-
+  // 4. WSL Bash Detection (Strict health check)
+  const wslResult = probeWsl();
   const wslInfo: ShellInfo = {
     type: "wsl",
-    available: wslAvailable,
+    available: wslResult.available,
     executable: "wsl.exe",
-    description: wslDesc,
+    description: wslResult.available
+      ? `WSL Bash (${wslResult.distro})`
+      : `WSL (${wslResult.reason || "Not functional"})`,
+    status: wslResult.available ? "healthy" : "unavailable",
+    healthProbe: {
+      healthy: wslResult.available,
+      reason: wslResult.reason,
+    },
   };
 
   // Determine intelligent default shell
   let defaultShell: ShellType = "powershell";
   if (isWin) {
-    defaultShell = gitBashAvailable ? "bash" : "powershell";
+    defaultShell = gitBashInfo.available ? "bash" : "powershell";
   } else {
     defaultShell = "bash";
   }
@@ -179,7 +348,7 @@ export function detectShells(forceRefresh = false): DetectedShells {
 
 /**
  * Resolves the executable and arguments prefix for a requested shell type.
- * Never silently invokes WSL when bash is requested.
+ * Accurately routes bash and git-bash to real Git Bash on Windows.
  */
 export function resolveShellCommand(requested?: ShellType | string): {
   shell: string;
@@ -214,7 +383,39 @@ export function resolveShellCommand(requested?: ShellType | string): {
     };
   }
 
-  if (req === "bash" || req === "git-bash") {
+  if (req === "git-bash") {
+    if (shells.gitBash.available) {
+      return {
+        shell: shells.gitBash.executable,
+        argsPrefix: ["-c"],
+        shellType: "git-bash",
+        description: shells.gitBash.description,
+      };
+    }
+    throw new Error(
+      `BASH_NOT_AVAILABLE: Git Bash was not found on this Windows system.\n` +
+      `Detected shells:\n` +
+      `- PowerShell: ${shells.powershell.available ? "available" : "unavailable"}\n` +
+      `- cmd: ${shells.cmd.available ? "available" : "unavailable"}\n` +
+      `- WSL: ${shells.wsl.available ? "available" : "unavailable"}`
+    );
+  }
+
+  if (req === "wsl") {
+    if (!shells.wsl.available) {
+      const reason = shells.wsl.healthProbe?.reason || "WSL is not functional or lacks /bin/bash.";
+      throw new Error(`WSL_UNAVAILABLE: ${reason}`);
+    }
+    return {
+      shell: "wsl.exe",
+      argsPrefix: ["bash", "-c"],
+      shellType: "wsl",
+      description: shells.wsl.description,
+    };
+  }
+
+  if (req === "bash") {
+    // 1. Git Bash on Windows (preferred)
     if (shells.gitBash.available) {
       return {
         shell: shells.gitBash.executable,
@@ -224,48 +425,38 @@ export function resolveShellCommand(requested?: ShellType | string): {
       };
     }
 
-    if (process.platform === "win32") {
-      // If WSL is genuinely verified available
-      if (shells.wsl.available) {
-        return {
-          shell: "wsl.exe",
-          argsPrefix: ["bash", "-c"],
-          shellType: "wsl",
-          description: "WSL Bash (verified distro)",
-        };
-      }
-
-      // DO NOT crash with WSL CreateProcess error! Fail cleanly with actionable help!
-      throw new Error(
-        `BASH_NOT_AVAILABLE: No Bash installation found on this Windows machine. ` +
-        `Git Bash was not found in Program Files or LocalAppData, and WSL has no initialized distributions.\n` +
-        `Available shells on this machine:\n` +
-        `- PowerShell (${shells.powershell.description})\n` +
-        `- cmd.exe (${shells.cmd.description})\n` +
-        `To execute commands on Windows, use shell: "powershell" or shell: "cmd".`
-      );
+    // 2. WSL only if genuinely functional with bash
+    if (shells.wsl.available) {
+      return {
+        shell: "wsl.exe",
+        argsPrefix: ["bash", "-c"],
+        shellType: "wsl",
+        description: shells.wsl.description,
+      };
     }
 
-    return {
-      shell: "bash",
-      argsPrefix: ["-c"],
-      shellType: "bash",
-      description: "POSIX Bash",
-    };
-  }
-
-  if (req === "wsl") {
-    if (!shells.wsl.available) {
-      throw new Error("WSL is not available or has no registered Linux distributions.");
+    // 3. POSIX bash on Linux/macOS
+    if (process.platform !== "win32") {
+      return {
+        shell: "bash",
+        argsPrefix: ["-c"],
+        shellType: "bash",
+        description: "POSIX Bash",
+      };
     }
-    return {
-      shell: "wsl.exe",
-      argsPrefix: ["bash", "-c"],
-      shellType: "wsl",
-      description: "WSL Bash",
-    };
+
+    // None available on Windows
+    throw new Error(
+      `BASH_NOT_AVAILABLE: No functional Bash provider found on this Windows machine.\n` +
+      `Git Bash was not found and WSL has no functional bash distribution.\n` +
+      `Detected shells:\n` +
+      `- PowerShell: ${shells.powershell.available ? "available" : "unavailable"} (${shells.powershell.description})\n` +
+      `- cmd.exe: ${shells.cmd.available ? "available" : "unavailable"}\n` +
+      `- Git Bash: unavailable\n` +
+      `- WSL: unavailable (${shells.wsl.healthProbe?.reason || "no bash"})\n` +
+      `To execute commands on Windows, use shell: "powershell" or shell: "cmd".`
+    );
   }
 
-  // Fallback to default
   return resolveShellCommand(shells.defaultShell);
 }

@@ -17,6 +17,8 @@ import { executeSearchCode } from "../src/discovery/search_code.js";
 import { executeGetOutline } from "../src/discovery/get_outline.js";
 import { taskStore } from "../src/tasks/task_store.js";
 import { observabilityManager } from "../src/observability/diagnostics.js";
+import { discoverSkills, readSkillContent } from "../src/workspace/skills.js";
+import { workspaceManager } from "../src/workspace/workspace_manager.js";
 
 describe("DevSpace 4.0 Comprehensive Acceptance Suite", () => {
   it("verifies full filesystem mutations and image read lifecycle", async () => {
@@ -160,4 +162,33 @@ describe("DevSpace 4.0 Comprehensive Acceptance Suite", () => {
     assert.strictEqual(diagRes.verification.passed, true);
     assert.strictEqual(diagRes.data?.version, "4.0.0");
   });
+
+  it("verifies global and workspace skill discovery and read lifecycle", async () => {
+    const root = process.cwd();
+
+    // 1. discoverSkills
+    const skills = await discoverSkills(root);
+    assert.ok(skills.length >= 1, "Discovered at least one skill");
+    assert.ok(skills.some((s) => s.name === "subagents"), "Found subagents skill");
+
+    const subagentsSkill = skills.find((s) => s.name === "subagents");
+    assert.ok(subagentsSkill?.source);
+    assert.ok(subagentsSkill?.path);
+    assert.ok(subagentsSkill?.description);
+
+    // 2. readSkillContent
+    const contentRes = await readSkillContent("subagents", root);
+    assert.strictEqual(contentRes.name, "subagents");
+    assert.ok(contentRes.content.length > 0);
+    assert.ok(contentRes.content.includes("Subagent") || contentRes.content.includes("profile"));
+
+    // 3. openWorkspace includes discovered skills and shells in returned data
+    const wsRes = await workspaceManager.openWorkspace(root, [root]);
+    assert.strictEqual(wsRes.success, true);
+    assert.ok(wsRes.data?.skills && wsRes.data.skills.length >= 1);
+    assert.ok(wsRes.data?.shells.powershell.available);
+    assert.ok(wsRes.data?.shells.cmd.available);
+    assert.ok(wsRes.data?.shells.gitBash.available);
+  });
 });
+

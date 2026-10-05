@@ -3,6 +3,7 @@ import { z } from "zod";
 import type { DevSpaceConfig } from "../types/index.js";
 import { formatMcpResponse, type McpToolResponse } from "./response.js";
 import { workspaceManager } from "../workspace/workspace_manager.js";
+import { discoverSkills, readSkillContent } from "../workspace/skills.js";
 import { executeReadFile } from "../filesystem/read_file.js";
 import { executeWriteFile } from "../filesystem/write_file.js";
 import { executeEditFile } from "../filesystem/edit_file.js";
@@ -698,10 +699,11 @@ All filesystem mutations, patch applications, git reverts, process executions, b
     "Builds an accessible interactive element tree with stable element references ([ref=e1], [ref=e2]) and version tracking.",
     {
       session_id: z.string().optional().describe("Browser session ID. Defaults to 'default'."),
+      verbosity: z.enum(["interactive", "normal", "full"]).optional().describe("Snapshot detail level. Defaults to 'normal'."),
     },
-    async ({ session_id = "default" }) => {
+    async ({ session_id = "default", verbosity = "normal" }) => {
       const session = await browserManager.getSession(session_id);
-      const res = await takeBrowserSnapshot(session);
+      const res = await takeBrowserSnapshot(session, { verbosity });
       return formatMcpResponse(res);
     }
   );
@@ -1216,7 +1218,57 @@ All filesystem mutations, patch applications, git reverts, process executions, b
     }
   );
 
-  // 65. devspace_diagnostics
+  // 65. list_skills
+  registerTool(
+    "list_skills",
+    "Lists available workspace and global skills with names, sources, and descriptions.",
+    {},
+    async () => {
+      const skills = await discoverSkills(getRoot());
+      const text =
+        skills.length > 0
+          ? `Available Skills (${skills.length}):\n` +
+            skills.map((s) => `- ${s.name} [${s.source}]: ${s.description}`).join("\n")
+          : "No skills discovered.";
+      return formatMcpResponse({
+        success: true,
+        action: "list_skills",
+        text,
+        verification: { performed: true, passed: true, method: "skill_discovery" },
+        data: { skills },
+      });
+    }
+  );
+
+  // 66. read_skill
+  registerTool(
+    "read_skill",
+    "Reads instructions and content of a discovered skill by name or path.",
+    {
+      skill_name: z.string().describe("Skill name or relative/absolute path to SKILL.md."),
+    },
+    async ({ skill_name }) => {
+      try {
+        const { name, content, path: skillPath } = await readSkillContent(skill_name, getRoot());
+        return formatMcpResponse({
+          success: true,
+          action: `read_skill "${skill_name}"`,
+          text: `=== SKILL: ${name} ===\nPath: ${skillPath}\n\n${content}`,
+          verification: { performed: true, passed: true, method: "skill_read" },
+          data: { name, path: skillPath, content },
+        });
+      } catch (err: any) {
+        return formatMcpResponse({
+          success: false,
+          action: `read_skill "${skill_name}"`,
+          text: err.message,
+          verification: { performed: true, passed: false, method: "skill_read", error: err.message },
+        });
+      }
+    }
+  );
+
+  // 67. devspace_diagnostics
   registerTool(
     "devspace_diagnostics",
     "Returns comprehensive health diagnostics, shell availability, browser status, and tool reliability audit logs.",
