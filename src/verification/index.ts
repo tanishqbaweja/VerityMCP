@@ -33,6 +33,8 @@ export async function verifyFileContent(
           bytes: actualBytes.length,
           hash: actualHash,
         },
+        execution: { status: "passed", method: "fs_mutation" },
+        state: { status: "passed", method: "sha256_readback", details: { bytes: actualBytes.length, hash: actualHash } },
       };
     }
 
@@ -51,6 +53,8 @@ export async function verifyFileContent(
           actualHash,
           expectedHash,
         },
+        execution: { status: "passed", method: "fs_mutation" },
+        state: { status: "passed", method: "readback_content_normalized_newlines", details: { bytes: actualBytes.length } },
       };
     }
 
@@ -66,6 +70,12 @@ export async function verifyFileContent(
         expectedHash,
         actualHash,
       },
+      execution: { status: "passed", method: "fs_mutation" },
+      state: {
+        status: "failed",
+        method: "sha256_readback",
+        error: `File content mismatch: expected ${expectedContent.length} chars (hash: ${expectedHash.slice(0, 10)}...), found ${actualText.length} chars (hash: ${actualHash.slice(0, 10)}...)`,
+      },
     };
   } catch (err: any) {
     return {
@@ -74,6 +84,8 @@ export async function verifyFileContent(
       method: "readback_sha256",
       error: `Readback failed: ${err.message}`,
       details: { filePath },
+      execution: { status: "failed", method: "fs_mutation", error: err.message },
+      state: { status: "failed", method: "sha256_readback", error: err.message },
     };
   }
 }
@@ -93,6 +105,8 @@ export async function verifyFileExistence(
         passed: true,
         method: "fs_stat_exists",
         details: { filePath, size: stat.size, isFile: stat.isFile() },
+        execution: { status: "passed", method: "fs_existence_probe" },
+        state: { status: "passed", method: "fs_stat_exists", details: { size: stat.size } },
       };
     } else {
       return {
@@ -100,6 +114,8 @@ export async function verifyFileExistence(
         passed: false,
         method: "fs_stat_exists",
         error: `Expected file "${filePath}" to be deleted, but it still exists (${stat.size} bytes).`,
+        execution: { status: "passed", method: "fs_existence_probe" },
+        state: { status: "failed", method: "fs_stat_exists", error: `File still exists (${stat.size} bytes)` },
       };
     }
   } catch (err: any) {
@@ -110,6 +126,8 @@ export async function verifyFileExistence(
           passed: true,
           method: "fs_stat_unlinked",
           details: { filePath },
+          execution: { status: "passed", method: "fs_existence_probe" },
+          state: { status: "passed", method: "fs_stat_unlinked" },
         };
       } else {
         return {
@@ -117,6 +135,8 @@ export async function verifyFileExistence(
           passed: false,
           method: "fs_stat_exists",
           error: `Expected file "${filePath}" to exist, but it was not found.`,
+          execution: { status: "passed", method: "fs_existence_probe" },
+          state: { status: "failed", method: "fs_stat_exists", error: "File not found" },
         };
       }
     }
@@ -125,6 +145,8 @@ export async function verifyFileExistence(
       passed: false,
       method: "fs_stat",
       error: `Stat check failed: ${err.message}`,
+      execution: { status: "failed", method: "fs_existence_probe", error: err.message },
+      state: { status: "failed", method: "fs_stat", error: err.message },
     };
   }
 }
@@ -143,6 +165,8 @@ export async function verifyFileRelocation(
       passed: false,
       method: "file_relocation_check",
       error: `Source file "${oldPath}" still exists after move.`,
+      execution: { status: "passed", method: "fs_move" },
+      state: { status: "failed", method: "file_relocation_check", error: "Source file not unlinked" },
     };
   }
 
@@ -153,6 +177,8 @@ export async function verifyFileRelocation(
       passed: false,
       method: "file_relocation_check",
       error: `Destination file "${newPath}" does not exist after move.`,
+      execution: { status: "passed", method: "fs_move" },
+      state: { status: "failed", method: "file_relocation_check", error: "Destination file missing" },
     };
   }
 
@@ -161,5 +187,7 @@ export async function verifyFileRelocation(
     passed: true,
     method: "file_relocation_check",
     details: { oldPath, newPath },
+    execution: { status: "passed", method: "fs_move" },
+    state: { status: "passed", method: "file_relocation_check", details: { oldPath, newPath } },
   };
 }

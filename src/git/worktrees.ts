@@ -146,8 +146,10 @@ export async function executeExitWorktree(options: {
     if (!status.data?.isClean && !options.force) {
       return {
         success: false,
+        error_code: "WORKTREE_DIRTY",
         action: "exit_worktree",
         text: `CRITICAL: Worktree "${branch}" contains uncommitted changes. Refusing to delete without force: true.`,
+        summary: `Worktree contains uncommitted changes (requires force: true)`,
         verification: {
           performed: true,
           passed: false,

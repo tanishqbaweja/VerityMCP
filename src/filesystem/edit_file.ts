@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import crypto from "node:crypto";
 import * as diff from "diff";
 import { resolveWorkspacePath } from "../security/roots.js";
 import { verifyFileContent } from "../verification/index.js";
@@ -11,6 +12,7 @@ export interface EditFileOptions {
   oldString: string;
   newString: string;
   replaceAll?: boolean;
+  expectedSha256?: string;
 }
 
 export interface EditFileData {
@@ -74,8 +76,10 @@ export async function executeEditFile(
   } catch (err: any) {
     return {
       success: false,
+      error_code: "FILE_NOT_FOUND",
       action: `edit_file "${filePath}"`,
       text: `Failed to read target file "${filePath}": ${err.message}`,
+      summary: `Target file not readable: ${err.message}`,
       verification: {
         performed: true,
         passed: false,
@@ -84,6 +88,28 @@ export async function executeEditFile(
       },
       durationMs: Date.now() - startTime,
     };
+  }
+
+  if (options.expectedSha256) {
+    const currentHash = crypto.createHash("sha256").update(Buffer.from(originalContent)).digest("hex");
+    if (currentHash !== options.expectedSha256) {
+      return {
+        success: false,
+        error_code: "FILE_CHANGED_SINCE_READ",
+        action: `edit_file "${filePath}"`,
+        text: `Precondition failed: file "${filePath}" has changed since last read. Expected SHA-256 "${options.expectedSha256}", found "${currentHash}".`,
+        summary: `Concurrent edit conflict: file changed since last read`,
+        verification: {
+          performed: true,
+          passed: false,
+          method: "expected_sha256_precondition_check",
+          error: `Hash mismatch: expected ${options.expectedSha256}, actual ${currentHash}`,
+          execution: { status: "failed", method: "expected_sha256_precondition_check" },
+          state: { status: "not_performed" },
+        },
+        durationMs: Date.now() - startTime,
+      };
+    }
   }
 
   let targetContent = originalContent;
