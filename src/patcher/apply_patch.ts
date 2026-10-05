@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import crypto from "node:crypto";
 import * as diff from "diff";
 import { resolveWorkspacePath } from "../security/roots.js";
 import {
@@ -36,6 +37,7 @@ export interface ApplyPatchOptions {
   workspaceRoot: string;
   allowedRoots?: string[];
   patch: string;
+  expectedSha256Map?: Record<string, string>;
 }
 
 export interface ApplyPatchData {
@@ -426,7 +428,7 @@ export async function executeApplyPatch(
   options: ApplyPatchOptions
 ): Promise<StandardToolResponse<ApplyPatchData>> {
   const startTime = Date.now();
-  const { workspaceRoot, allowedRoots = [], patch } = options;
+  const { workspaceRoot, allowedRoots = [], patch, expectedSha256Map } = options;
 
   if (!patch || !patch.trim()) {
     return {
@@ -568,8 +570,10 @@ export async function executeApplyPatch(
       } catch (err: any) {
         return {
           success: false,
+          error_code: "FILE_NOT_FOUND",
           action: `apply_patch update "${fp.filePath}"`,
           text: `Cannot update "${fp.filePath}": file does not exist or is unreadable (${err.message})`,
+          summary: `Target file not readable: ${fp.filePath}`,
           verification: {
             performed: true,
             passed: false,
@@ -580,19 +584,46 @@ export async function executeApplyPatch(
         };
       }
 
+      if (expectedSha256Map && expectedSha256Map[fp.filePath]) {
+        const expected = expectedSha256Map[fp.filePath];
+        const actualHash = crypto.createHash("sha256").update(Buffer.from(originalContent)).digest("hex");
+        if (actualHash !== expected) {
+          return {
+            success: false,
+            error_code: "FILE_CHANGED_SINCE_READ",
+            action: `apply_patch update "${fp.filePath}"`,
+            text: `Precondition failed: file "${fp.filePath}" has changed since last read. Expected SHA-256 "${expected}", found "${actualHash}".`,
+            summary: `Concurrent edit conflict on ${fp.filePath}`,
+            verification: {
+              performed: true,
+              passed: false,
+              method: "expected_sha256_precondition_check",
+              error: `Hash mismatch for ${fp.filePath}: expected ${expected}, actual ${actualHash}`,
+              execution: { status: "failed", method: "expected_sha256_precondition_check" },
+              state: { status: "not_performed" },
+            },
+            durationMs: Date.now() - startTime,
+          };
+        }
+      }
+
       let updatedContent = "";
       try {
         updatedContent = applyHunksToContent(originalContent, fp.hunks, fp.filePath);
       } catch (err: any) {
         return {
           success: false,
+          error_code: "PATCH_CONTEXT_MISMATCH",
           action: `apply_patch update "${fp.filePath}"`,
           text: `Failed applying hunks to "${fp.filePath}": ${err.message}`,
+          summary: `Hunk context mismatch in ${fp.filePath}`,
           verification: {
             performed: true,
             passed: false,
             method: "hunk_application",
             error: err.message,
+            execution: { status: "failed", method: "hunk_application", error: err.message },
+            state: { status: "not_performed" },
           },
           durationMs: Date.now() - startTime,
         };
@@ -702,14 +733,18 @@ export async function executeApplyPatch(
   if (!allPassed) {
     return {
       success: false,
+      error_code: "PATCH_VERIFICATION_FAILED",
       action: "apply_patch verification",
       text: `Patch committed but failed post-mutation verification:${failureDetails}`,
+      summary: "Post-mutation verification failed",
       verification: {
         performed: true,
         passed: false,
         method: "post_mutation_verification",
         error: failureDetails,
         details: { verifications },
+        execution: { status: "passed", method: "atomic_commit" },
+        state: { status: "failed", method: "post_mutation_verification", error: failureDetails },
       },
       durationMs: Date.now() - startTime,
     };

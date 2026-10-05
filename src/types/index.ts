@@ -2,19 +2,67 @@
  * VerityMCP - Core Domain Types
  */
 
+export type StandardErrorCode =
+  | "FILE_NOT_FOUND"
+  | "FILE_CHANGED_SINCE_READ"
+  | "PATCH_CONTEXT_MISMATCH"
+  | "PATCH_VERIFICATION_FAILED"
+  | "WORKTREE_DIRTY"
+  | "BASH_NOT_AVAILABLE"
+  | "WSL_UNAVAILABLE"
+  | "PROCESS_NOT_FOUND"
+  | "PROCESS_TIMEOUT"
+  | "STALE_ELEMENT_REFERENCE"
+  | "ELEMENT_NOT_VISIBLE"
+  | "ELEMENT_NOT_EDITABLE"
+  | "BROWSER_SESSION_NOT_FOUND"
+  | "SCREENSHOT_WRITE_FAILED"
+  | "GIT_CONFLICT"
+  | "SECURITY_VIOLATION"
+  | "INVALID_ARGUMENT"
+  | "NOTEBOOK_INVALID"
+  | "COMMAND_FAILED"
+  | "INTERNAL_ERROR";
+
+export interface ExecutionVerification {
+  status: "passed" | "failed" | "not_performed";
+  method: string;
+  details?: Record<string, unknown>;
+  error?: string;
+}
+
+export interface StateVerification {
+  status: "passed" | "failed" | "not_performed" | "not_observable";
+  method?: string;
+  observed_changes?: Array<{
+    type: string;
+    before?: unknown;
+    after?: unknown;
+    description?: string;
+  }>;
+  details?: Record<string, unknown>;
+  error?: string;
+}
+
 export interface VerificationResult {
   performed: boolean;
   passed: boolean;
   method: string;
   details?: Record<string, unknown>;
   error?: string;
+  execution?: ExecutionVerification;
+  state?: StateVerification;
 }
 
 export interface StandardToolResponse<T = unknown> {
   success: boolean;
   action: string;
   text: string;
+  summary?: string;
+  error_code?: StandardErrorCode | string;
   verification: VerificationResult;
+  execution_verification?: ExecutionVerification;
+  state_verification?: StateVerification;
   data?: T;
   stdout?: string;
   stderr?: string;

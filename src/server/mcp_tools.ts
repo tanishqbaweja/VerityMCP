@@ -37,6 +37,10 @@ import {
   executePressKey,
   executeEval,
   executePdf,
+  executeWaitFor,
+  executeTraceStart,
+  executeTraceStop,
+  executeListTabs,
   executeGetConsole,
   executeGetNetwork,
 } from "../browser/actions.js";
@@ -58,6 +62,7 @@ import {
 import {
   executeGitStatus,
   executeGitDiff,
+  executeGitConflicts,
   executeShowChanges,
   executeRevertChanges,
 } from "../git/git_ops.js";
@@ -199,6 +204,7 @@ All filesystem mutations, patch applications, git reverts, process executions, b
       old_string: z.string().describe("Exact text to replace."),
       new_string: z.string().describe("Replacement text."),
       replace_all: z.boolean().optional().describe("Replace all occurrences if multiple. Defaults to false."),
+      expected_sha256: z.string().optional().describe("Optional SHA-256 hash of the file prior to editing, ensuring concurrent mutation safety."),
     },
     async (args) => {
       const targetPath = args.file_path || args.path;
@@ -210,6 +216,7 @@ All filesystem mutations, patch applications, git reverts, process executions, b
         oldString: args.old_string,
         newString: args.new_string,
         replaceAll: args.replace_all ?? false,
+        expectedSha256: args.expected_sha256,
       });
       return formatMcpResponse(res);
     }
@@ -221,12 +228,14 @@ All filesystem mutations, patch applications, git reverts, process executions, b
     "Applies Codex (*** Begin Patch) or unified diffs across one or multiple files with atomic staging, rollback, and mandatory post-mutation verification (preventing false-success conditions).",
     {
       patch: z.string().describe("The patch string to apply."),
+      expected_sha256_map: z.record(z.string(), z.string()).optional().describe("Optional map of filePath to expected SHA-256 hash before applying patch."),
     },
-    async ({ patch }) => {
+    async ({ patch, expected_sha256_map }) => {
       const res = await executeApplyPatch({
         workspaceRoot: getRoot(),
         allowedRoots: config.allowedRoots,
         patch,
+        expectedSha256Map: expected_sha256_map,
       });
       return formatMcpResponse(res);
     }
@@ -506,12 +515,25 @@ All filesystem mutations, patch applications, git reverts, process executions, b
   // 19. interrupt_process
   registerTool(
     "interrupt_process",
-    "Terminates a process session and all its child process trees cleanly.",
+    "Sends graceful interrupt (SIGINT/Ctrl-C) to a running process session.",
     {
-      session_id: z.string().describe("Session ID to terminate."),
+      session_id: z.string().describe("Session ID to interrupt."),
     },
     async ({ session_id }) => {
       const res = await processManager.interruptProcess(session_id);
+      return formatMcpResponse(res);
+    }
+  );
+
+  // 19b. kill_process
+  registerTool(
+    "kill_process",
+    "Forcefully terminates a process session and its entire descendant process tree.",
+    {
+      session_id: z.string().describe("Session ID to kill."),
+    },
+    async ({ session_id }) => {
+      const res = await processManager.killProcess(session_id);
       return formatMcpResponse(res);
     }
   );
@@ -693,6 +715,20 @@ All filesystem mutations, patch applications, git reverts, process executions, b
     }
   );
 
+  // 29b. browser_list_tabs
+  registerTool(
+    "browser_list_tabs",
+    "Lists all open tabs in the browser session with their titles, URLs, and active status.",
+    {
+      session_id: z.string().optional().describe("Browser session ID. Defaults to 'default'."),
+    },
+    async ({ session_id = "default" }) => {
+      const session = await browserManager.getSession(session_id);
+      const res = await executeListTabs(session);
+      return formatMcpResponse(res);
+    }
+  );
+
   // 30. browser_snapshot
   registerTool(
     "browser_snapshot",
@@ -700,10 +736,18 @@ All filesystem mutations, patch applications, git reverts, process executions, b
     {
       session_id: z.string().optional().describe("Browser session ID. Defaults to 'default'."),
       verbosity: z.enum(["interactive", "normal", "full"]).optional().describe("Snapshot detail level. Defaults to 'normal'."),
+      root_ref: z.string().optional().describe("Optional element reference to scope the snapshot to a subtree."),
+      selector: z.string().optional().describe("Optional CSS selector to scope the snapshot to a subtree."),
+      max_nodes: z.number().int().positive().optional().describe("Maximum number of elements to capture before truncating. Defaults to 500."),
     },
-    async ({ session_id = "default", verbosity = "normal" }) => {
+    async ({ session_id = "default", verbosity = "normal", root_ref, selector, max_nodes }) => {
       const session = await browserManager.getSession(session_id);
-      const res = await takeBrowserSnapshot(session, { verbosity });
+      const res = await takeBrowserSnapshot(session, {
+        verbosity,
+        root_ref,
+        selector,
+        maxNodes: max_nodes,
+      });
       return formatMcpResponse(res);
     }
   );
@@ -720,6 +764,57 @@ All filesystem mutations, patch applications, git reverts, process executions, b
     async ({ ref, selector, session_id = "default" }) => {
       const session = await browserManager.getSession(session_id);
       const res = await executeClick(session, { ref, selector });
+      return formatMcpResponse(res);
+    }
+  );
+
+  // 31b. browser_wait_for
+  registerTool(
+    "browser_wait_for",
+    "Waits for an element state, specific text, URL navigation, or networkidle with timeout.",
+    {
+      session_id: z.string().optional().describe("Browser session ID."),
+      ref: z.string().optional().describe("Element ref from browser_snapshot to wait for."),
+      selector: z.string().optional().describe("CSS selector to wait for."),
+      text: z.string().optional().describe("Visible text to wait for."),
+      state: z.enum(["attached", "detached", "visible", "hidden"]).optional().describe("State to wait for. Defaults to visible."),
+      url: z.string().optional().describe("URL or URL glob pattern to wait for."),
+      timeout_ms: z.number().int().positive().optional().describe("Timeout in milliseconds (default 10000ms)."),
+    },
+    async ({ session_id = "default", ref, selector, text, state, url, timeout_ms }) => {
+      const session = await browserManager.getSession(session_id);
+      const res = await executeWaitFor(session, { ref, selector, text, state, url, timeoutMs: timeout_ms });
+      return formatMcpResponse(res);
+    }
+  );
+
+  // 31c. browser_trace_start
+  registerTool(
+    "browser_trace_start",
+    "Starts recording a Playwright diagnostic trace with screenshots and DOM snapshots.",
+    {
+      session_id: z.string().optional().describe("Browser session ID."),
+      screenshots: z.boolean().optional().describe("Whether to capture screenshots in trace (default true)."),
+      snapshots: z.boolean().optional().describe("Whether to capture DOM snapshots in trace (default true)."),
+    },
+    async ({ session_id = "default", screenshots, snapshots }) => {
+      const session = await browserManager.getSession(session_id);
+      const res = await executeTraceStart(session, { screenshots, snapshots });
+      return formatMcpResponse(res);
+    }
+  );
+
+  // 31d. browser_trace_stop
+  registerTool(
+    "browser_trace_stop",
+    "Stops recording the Playwright diagnostic trace and saves it as a zip archive.",
+    {
+      session_id: z.string().optional().describe("Browser session ID."),
+      output_path: z.string().optional().describe("Optional path where the trace zip should be saved."),
+    },
+    async ({ session_id = "default", output_path }) => {
+      const session = await browserManager.getSession(session_id);
+      const res = await executeTraceStop(session, output_path);
       return formatMcpResponse(res);
     }
   );
@@ -898,13 +993,16 @@ All filesystem mutations, patch applications, git reverts, process executions, b
   // 42. browser_console
   registerTool(
     "browser_console",
-    "Retrieves captured console logs from the browser session.",
+    "Retrieves captured console logs from the browser session with optional severity, text, and limit filters.",
     {
-      session_id: z.string().optional(),
+      session_id: z.string().optional().describe("Browser session ID. Defaults to 'default'."),
+      level: z.string().optional().describe("Optional log level filter (e.g. 'error', 'warn', 'info', 'log')."),
+      filter: z.string().optional().describe("Optional substring filter for console message text."),
+      limit: z.number().int().positive().optional().describe("Max number of recent logs to return."),
     },
-    async ({ session_id = "default" }) => {
+    async ({ session_id = "default", level, filter, limit }) => {
       const session = await browserManager.getSession(session_id);
-      const res = executeGetConsole(session);
+      const res = executeGetConsole(session, { level, filter, limit });
       return formatMcpResponse(res);
     }
   );
@@ -912,13 +1010,24 @@ All filesystem mutations, patch applications, git reverts, process executions, b
   // 43. browser_network
   registerTool(
     "browser_network",
-    "Retrieves captured network requests and responses from the browser session.",
+    "Retrieves captured network requests and responses with optional status, failed-only, url pattern, and resource type filters.",
     {
-      session_id: z.string().optional(),
+      session_id: z.string().optional().describe("Browser session ID. Defaults to 'default'."),
+      status: z.number().int().optional().describe("Filter by HTTP status code."),
+      failed_only: z.boolean().optional().describe("Only return failed requests."),
+      url_pattern: z.string().optional().describe("Filter requests containing this URL pattern."),
+      resource_type: z.string().optional().describe("Filter by resource type (e.g. 'xhr', 'fetch', 'document')."),
+      limit: z.number().int().positive().optional().describe("Max number of recent events to return."),
     },
-    async ({ session_id = "default" }) => {
+    async ({ session_id = "default", status, failed_only, url_pattern, resource_type, limit }) => {
       const session = await browserManager.getSession(session_id);
-      const res = executeGetNetwork(session);
+      const res = executeGetNetwork(session, {
+        status,
+        failedOnly: failed_only,
+        urlPattern: url_pattern,
+        resourceType: resource_type,
+        limit,
+      });
       return formatMcpResponse(res);
     }
   );
@@ -1046,6 +1155,17 @@ All filesystem mutations, patch applications, git reverts, process executions, b
     },
     async ({ target_ref, file_paths }) => {
       const res = executeGitDiff(getRoot(), { targetRef: target_ref, filePaths: file_paths });
+      return formatMcpResponse(res);
+    }
+  );
+
+  // 51b. git_conflicts
+  registerTool(
+    "git_conflicts",
+    "Inspects working tree for git merge, rebase, or cherry-pick conflicts, returning conflicted files and conflict markers.",
+    {},
+    async () => {
+      const res = executeGitConflicts(getRoot());
       return formatMcpResponse(res);
     }
   );
@@ -1275,6 +1395,17 @@ All filesystem mutations, patch applications, git reverts, process executions, b
     {},
     async () => {
       const res = observabilityManager.getDiagnostics();
+      return formatMcpResponse(res);
+    }
+  );
+
+  // 68. verity_self_test
+  registerTool(
+    "verity_self_test",
+    "Executes a comprehensive, non-destructive end-to-end self test verifying filesystem atomic writes/reads/hashes, shell command execution, git availability, process sessions, and browser subsystem.",
+    {},
+    async () => {
+      const res = await observabilityManager.runSelfTest(getRoot());
       return formatMcpResponse(res);
     }
   );

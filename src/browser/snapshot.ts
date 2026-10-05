@@ -20,19 +20,64 @@ export interface BrowserSnapshotData {
   title: string;
   version: number;
   interactiveElementsCount: number;
+  truncated: boolean;
   snapshotText: string;
   elements: ElementSnapshotInfo[];
 }
 
 export interface SnapshotOptions {
   verbosity?: "interactive" | "normal" | "full";
+  root_ref?: string;
+  selector?: string;
+  maxNodes?: number;
 }
 
 const EVAL_SNAPSHOT_SCRIPT = `
-(verbosity) => {
-  let refCounter = 0;
+(args) => {
+  const verbosity = args.verbosity || "normal";
+  const rootRef = args.rootRef;
+  const rootSelector = args.rootSelector;
+  const limit = args.maxNodes || 500;
+
+  let root = document.body || document.documentElement;
+  if (rootRef) {
+    const cleanRef = rootRef.replace(/^@/, "");
+    root = document.querySelector('[data-verity-ref="' + cleanRef + '"]');
+    if (!root) {
+      return { error: 'Root ref "' + rootRef + '" not found in DOM.', elements: [], treeLines: [], truncated: false };
+    }
+  } else if (rootSelector) {
+    root = document.querySelector(rootSelector);
+    if (!root) {
+      return { error: 'Root selector "' + rootSelector + '" not found in DOM.', elements: [], treeLines: [], truncated: false };
+    }
+  }
+
+  // Calculate highest existing ref index to preserve stability across snapshots
+  let maxRefNum = 0;
+  const existingRefs = document.querySelectorAll('[data-verity-ref]');
+  for (let i = 0; i < existingRefs.length; i++) {
+    const val = existingRefs[i].getAttribute('data-verity-ref') || '';
+    const m = val.match(/^e(\\d+)$/);
+    if (m) {
+      const num = parseInt(m[1], 10);
+      if (num > maxRefNum) maxRefNum = num;
+    }
+  }
+
+  const getOrAssignRef = (el) => {
+    let ref = el.getAttribute('data-verity-ref');
+    if (!ref) {
+      maxRefNum++;
+      ref = 'e' + maxRefNum;
+      el.setAttribute('data-verity-ref', ref);
+    }
+    return ref;
+  };
+
   const elements = [];
   const treeLines = [];
+  let truncated = false;
 
   const checkVisible = (el) => {
     const style = window.getComputedStyle(el);
@@ -76,9 +121,22 @@ const EVAL_SNAPSHOT_SCRIPT = `
     return el.getAttribute("aria-label") || el.getAttribute("title") || (el.textContent || "").trim();
   };
 
+  const addElement = (info, line) => {
+    if (elements.length >= limit) {
+      if (!truncated) {
+        truncated = true;
+        treeLines.push('[Truncated: maximum node limit of ' + limit + ' reached. Use root_ref or selector to narrow the scope.]');
+      }
+      return false;
+    }
+    elements.push(info);
+    if (line) treeLines.push(line);
+    return true;
+  };
+
   // 1. Headings
   if (verbosity !== "interactive") {
-    const headings = Array.from(document.querySelectorAll("h1, h2, h3, h4, h5, h6"));
+    const headings = Array.from(root.querySelectorAll("h1, h2, h3, h4, h5, h6"));
     for (const h of headings) {
       if (checkVisible(h)) {
         const text = (h.textContent || "").trim();
@@ -88,14 +146,12 @@ const EVAL_SNAPSHOT_SCRIPT = `
   }
 
   // 2. Main Textbox
-  const mainInputs = Array.from(document.querySelectorAll("header input, .header input, input.new-todo, [autofocus]"));
+  const mainInputs = Array.from(root.querySelectorAll("header input, .header input, input.new-todo, [autofocus]"));
   for (const inp of mainInputs) {
     if (checkVisible(inp)) {
-      refCounter++;
-      const ref = "e" + refCounter;
-      inp.setAttribute("data-verity-ref", ref);
+      const ref = getOrAssignRef(inp);
       const ph = inp.placeholder || "What needs to be done?";
-      elements.push({
+      addElement({
         ref,
         tagName: "input",
         role: "textbox",
@@ -107,19 +163,16 @@ const EVAL_SNAPSHOT_SCRIPT = `
         isChecked: false,
         isDisabled: Boolean(inp.disabled),
         selector: '[data-verity-ref="' + ref + '"]',
-      });
-      treeLines.push('- textbox "' + ph + '" [ref=' + ref + ']');
+      }, '- textbox "' + ph + '" [ref=' + ref + ']');
     }
   }
 
   // 3. Mark all as complete
-  const markAll = document.querySelector("input#toggle-all, input.toggle-all");
+  const markAll = root.querySelector("input#toggle-all, input.toggle-all");
   if (markAll && checkVisible(markAll)) {
-    refCounter++;
-    const ref = "e" + refCounter;
-    markAll.setAttribute("data-verity-ref", ref);
+    const ref = getOrAssignRef(markAll);
     const isChecked = Boolean(markAll.checked);
-    elements.push({
+    addElement({
       ref,
       tagName: "input",
       role: "checkbox",
@@ -131,12 +184,11 @@ const EVAL_SNAPSHOT_SCRIPT = `
       isChecked,
       isDisabled: Boolean(markAll.disabled),
       selector: '[data-verity-ref="' + ref + '"]',
-    });
-    treeLines.push('- checkbox "Mark all as complete" [ref=' + ref + '] [checked=' + isChecked + ']');
+    }, '- checkbox "Mark all as complete" [ref=' + ref + '] [checked=' + isChecked + ']');
   }
 
   // 4. Todo List Items
-  const listItems = Array.from(document.querySelectorAll("ul.todo-list li, .todo-list li, ul#todo-list li"));
+  const listItems = Array.from(root.querySelectorAll("ul.todo-list li, .todo-list li, ul#todo-list li"));
   if (listItems.length > 0) {
     treeLines.push("- list");
     for (const li of listItems) {
@@ -144,13 +196,11 @@ const EVAL_SNAPSHOT_SCRIPT = `
 
       const cb = li.querySelector("input[type='checkbox'], input.toggle");
       if (cb) {
-        refCounter++;
-        const ref = "e" + refCounter;
-        cb.setAttribute("data-verity-ref", ref);
+        const ref = getOrAssignRef(cb);
         const isChecked = Boolean(cb.checked);
         const labelEl = li.querySelector("label");
         const todoText = (labelEl ? labelEl.textContent : "").trim() || "Toggle Todo";
-        elements.push({
+        addElement({
           ref,
           tagName: "input",
           role: "checkbox",
@@ -162,12 +212,11 @@ const EVAL_SNAPSHOT_SCRIPT = `
           isChecked,
           isDisabled: Boolean(cb.disabled),
           selector: '[data-verity-ref="' + ref + '"]',
-        });
-        treeLines.push('    - checkbox "Toggle Todo" [ref=' + ref + '] [checked=' + isChecked + ']');
+        }, '    - checkbox "' + todoText + '" [ref=' + ref + '] [checked=' + isChecked + ']');
       }
 
       const labelEl = li.querySelector("label");
-      if (labelEl) {
+      if (labelEl && verbosity !== "interactive") {
         const todoText = (labelEl.textContent || "").trim();
         if (todoText) {
           treeLines.push('    - text "' + todoText + '"');
@@ -176,10 +225,8 @@ const EVAL_SNAPSHOT_SCRIPT = `
 
       const delBtn = li.querySelector("button.destroy, button[aria-label='Delete'], button.delete");
       if (delBtn) {
-        refCounter++;
-        const ref = "e" + refCounter;
-        delBtn.setAttribute("data-verity-ref", ref);
-        elements.push({
+        const ref = getOrAssignRef(delBtn);
+        addElement({
           ref,
           tagName: "button",
           role: "button",
@@ -191,30 +238,29 @@ const EVAL_SNAPSHOT_SCRIPT = `
           isChecked: false,
           isDisabled: false,
           selector: '[data-verity-ref="' + ref + '"]',
-        });
-        treeLines.push('    - button "Delete" [ref=' + ref + ']');
+        }, '    - button "Delete" [ref=' + ref + ']');
       }
     }
   }
 
   // 5. Todo count / status text
-  const todoCount = document.querySelector(".todo-count, #todo-count");
-  if (todoCount && checkVisible(todoCount)) {
-    const text = (todoCount.textContent || "").replace(/\\s+/g, " ").trim();
-    if (text) {
-      treeLines.push('- text "' + text + '"');
+  if (verbosity !== "interactive") {
+    const todoCount = root.querySelector(".todo-count, #todo-count");
+    if (todoCount && checkVisible(todoCount)) {
+      const text = (todoCount.textContent || "").replace(/\\s+/g, " ").trim();
+      if (text) {
+        treeLines.push('- text "' + text + '"');
+      }
     }
   }
 
   // 6. Navigation / Filter links (All, Active, Completed)
-  const filterLinks = Array.from(document.querySelectorAll("ul.filters a, .filters a, footer a"));
+  const filterLinks = Array.from(root.querySelectorAll("ul.filters a, .filters a, footer a"));
   for (const a of filterLinks) {
     if (checkVisible(a)) {
-      refCounter++;
-      const ref = "e" + refCounter;
-      a.setAttribute("data-verity-ref", ref);
+      const ref = getOrAssignRef(a);
       const linkText = (a.textContent || "").trim();
-      elements.push({
+      addElement({
         ref,
         tagName: "a",
         role: "link",
@@ -226,20 +272,17 @@ const EVAL_SNAPSHOT_SCRIPT = `
         isChecked: false,
         isDisabled: false,
         selector: '[data-verity-ref="' + ref + '"]',
-      });
-      treeLines.push('- link "' + linkText + '" [ref=' + ref + ']');
+      }, '- link "' + linkText + '" [ref=' + ref + ']');
     }
   }
 
   // 7. Clear completed button
-  const clearBtn = document.querySelector("button.clear-completed, .clear-completed");
+  const clearBtn = root.querySelector("button.clear-completed, .clear-completed");
   if (clearBtn && checkVisible(clearBtn)) {
     const btnStyle = window.getComputedStyle(clearBtn);
     if (btnStyle.display !== "none") {
-      refCounter++;
-      const ref = "e" + refCounter;
-      clearBtn.setAttribute("data-verity-ref", ref);
-      elements.push({
+      const ref = getOrAssignRef(clearBtn);
+      addElement({
         ref,
         tagName: "button",
         role: "button",
@@ -251,21 +294,19 @@ const EVAL_SNAPSHOT_SCRIPT = `
         isChecked: false,
         isDisabled: false,
         selector: '[data-verity-ref="' + ref + '"]',
-      });
-      treeLines.push('- button "Clear completed" [ref=' + ref + ']');
+      }, '- button "Clear completed" [ref=' + ref + ']');
     }
   }
 
   // 8. General interactive elements
   const allInteractive = Array.from(
-    document.querySelectorAll("a[href], button, input, textarea, select, [role='button'], [role='checkbox'], [role='link']")
+    root.querySelectorAll("a[href], button, input, textarea, select, [role='button'], [role='checkbox'], [role='link']")
   );
 
   for (const el of allInteractive) {
-    if (!el.hasAttribute("data-verity-ref") && checkVisible(el)) {
-      refCounter++;
-      const ref = "e" + refCounter;
-      el.setAttribute("data-verity-ref", ref);
+    const existingRef = el.getAttribute("data-verity-ref");
+    if (!elements.find((e) => e.ref === existingRef) && checkVisible(el)) {
+      const ref = getOrAssignRef(el);
       const tag = el.tagName.toLowerCase();
       const role = el.getAttribute("role") || "";
       const inp = tag === "input" ? el : null;
@@ -274,7 +315,18 @@ const EVAL_SNAPSHOT_SCRIPT = `
       const isChecked = inp ? Boolean(inp.checked) : el.getAttribute("aria-checked") === "true";
       const isDisabled = Boolean(el.disabled || el.getAttribute("aria-disabled") === "true");
 
-      elements.push({
+      let line = "";
+      if (tag === "button" || role === "button") {
+        line = '- button "' + (name || 'Button') + '" [ref=' + ref + ']';
+      } else if (type === "checkbox" || role === "checkbox") {
+        line = '- checkbox "' + (name || 'Checkbox') + '" [ref=' + ref + '] [checked=' + isChecked + ']';
+      } else if (tag === "input" || tag === "textarea") {
+        line = '- textbox "' + (name || 'input') + '" [ref=' + ref + ']';
+      } else if (tag === "a" || role === "link") {
+        line = '- link "' + (name || 'Link') + '" [ref=' + ref + ']';
+      }
+
+      addElement({
         ref,
         tagName: tag,
         role: role || (tag === "input" ? (type === "checkbox" ? "checkbox" : "textbox") : tag),
@@ -286,21 +338,24 @@ const EVAL_SNAPSHOT_SCRIPT = `
         isChecked,
         isDisabled,
         selector: '[data-verity-ref="' + ref + '"]',
-      });
+      }, line);
+    }
+  }
 
-      if (tag === "button" || role === "button") {
-        treeLines.push('- button "' + (name || 'Button') + '" [ref=' + ref + ']');
-      } else if (type === "checkbox" || role === "checkbox") {
-        treeLines.push('- checkbox "' + (name || 'Checkbox') + '" [ref=' + ref + '] [checked=' + isChecked + ']');
-      } else if (tag === "input" || tag === "textarea") {
-        treeLines.push('- textbox "' + (name || 'input') + '" [ref=' + ref + ']');
-      } else if (tag === "a" || role === "link") {
-        treeLines.push('- link "' + (name || 'Link') + '" [ref=' + ref + ']');
+  // 9. Full verbosity text content
+  if (verbosity === "full") {
+    const paragraphs = Array.from(root.querySelectorAll("p, article, section > span"));
+    for (const p of paragraphs) {
+      if (checkVisible(p)) {
+        const t = (p.textContent || "").trim();
+        if (t && t.length > 5 && !treeLines.some((l) => l.includes(t.slice(0, 20)))) {
+          treeLines.push('- text "' + t.slice(0, 100) + '"');
+        }
       }
     }
   }
 
-  return { elements, treeLines };
+  return { elements, treeLines, truncated };
 }
 `;
 
@@ -320,24 +375,63 @@ export async function takeBrowserSnapshot(
   } catch (err: any) {
     return {
       success: false,
+      error_code: "BROWSER_SESSION_NOT_FOUND",
       action: "browser_snapshot",
       text: `Failed to inspect browser page: ${err.message}`,
+      summary: "Browser inspection failed",
       verification: {
         performed: true,
         passed: false,
         method: "page_inspection",
         error: err.message,
+        execution: { status: "failed", method: "page_inspection", error: err.message },
+        state: { status: "not_performed" },
       },
       durationMs: Date.now() - startTime,
     };
+  }
+
+  // Preserve previous snapshot references in refHistory for accurate stale detection
+  for (const [ref, info] of session.elementRefs.entries()) {
+    session.refHistory.set(ref, {
+      selector: info.selector,
+      role: info.role,
+      name: info.name,
+      version: session.currentSnapshotVersion,
+    });
   }
 
   session.currentSnapshotVersion += 1;
   const currentVersion = session.currentSnapshotVersion;
   session.elementRefs.clear();
 
-  // Evaluate raw string function directly in browser context without esbuild __name collisions
-  const rawData: any = await page.evaluate(`(${EVAL_SNAPSHOT_SCRIPT})(${JSON.stringify(verbosity)})`);
+  const evalPayload = {
+    verbosity,
+    rootRef: options.root_ref,
+    rootSelector: options.selector,
+    maxNodes: options.maxNodes || 500,
+  };
+
+  const rawData: any = await page.evaluate(`(${EVAL_SNAPSHOT_SCRIPT})(${JSON.stringify(evalPayload)})`);
+
+  if (rawData.error) {
+    return {
+      success: false,
+      error_code: "INVALID_ARGUMENT",
+      action: `browser_snapshot (v${currentVersion})`,
+      text: `Snapshot extraction failed: ${rawData.error}`,
+      summary: rawData.error,
+      verification: {
+        performed: true,
+        passed: false,
+        method: "dom_accessibility_tree_extraction",
+        error: rawData.error,
+        execution: { status: "failed", method: "dom_accessibility_tree_extraction", error: rawData.error },
+        state: { status: "not_performed" },
+      },
+      durationMs: Date.now() - startTime,
+    };
+  }
 
   const snapshotElements: ElementSnapshotInfo[] = [];
   const lines: string[] = [
@@ -354,6 +448,7 @@ export async function takeBrowserSnapshot(
       name: el.name || el.text,
       text: el.text,
       isChecked: el.isChecked,
+      version: currentVersion,
     });
     snapshotElements.push(el);
   });
@@ -364,6 +459,22 @@ export async function takeBrowserSnapshot(
     success: true,
     action: `browser_snapshot (v${currentVersion})`,
     text: snapshotText,
+    summary: `Extracted accessibility tree v${currentVersion} (${snapshotElements.length} elements, URL: ${url})`,
+    execution_verification: {
+      status: "passed",
+      method: "dom_accessibility_tree_extraction",
+      details: {
+        version: currentVersion,
+        interactiveElementsCount: rawData.elements.length,
+        truncated: Boolean(rawData.truncated),
+        url,
+      },
+    },
+    state_verification: {
+      status: "passed",
+      method: "dom_state_inspected",
+      details: { elementsExtracted: snapshotElements.length, truncated: Boolean(rawData.truncated) },
+    },
     verification: {
       performed: true,
       passed: true,
@@ -373,12 +484,15 @@ export async function takeBrowserSnapshot(
         interactiveElementsCount: rawData.elements.length,
         url,
       },
+      execution: { status: "passed", method: "dom_accessibility_tree_extraction" },
+      state: { status: "passed", method: "dom_state_inspected" },
     },
     data: {
       url,
       title,
       version: currentVersion,
       interactiveElementsCount: rawData.elements.length,
+      truncated: Boolean(rawData.truncated),
       snapshotText,
       elements: snapshotElements,
     },

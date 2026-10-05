@@ -10,6 +10,7 @@ export interface NetworkEventEntry {
   method: string;
   url: string;
   status?: number;
+  resourceType?: string;
   failed?: boolean;
   timestamp: number;
 }
@@ -20,9 +21,11 @@ export interface BrowserSession {
   pages: Page[];
   activePageIndex: number;
   currentSnapshotVersion: number;
-  elementRefs: Map<string, { selector: string; role?: string; name?: string; text?: string; isChecked?: boolean }>;
+  elementRefs: Map<string, { selector: string; role?: string; name?: string; text?: string; isChecked?: boolean; version?: number }>;
+  refHistory: Map<string, { selector: string; role?: string; name?: string; version: number }>;
   consoleLogs: ConsoleLogEntry[];
   networkEvents: NetworkEventEntry[];
+  isTracing?: boolean;
   createdAt: number;
   lastActiveAt: number;
 }
@@ -58,6 +61,7 @@ export class BrowserManager {
       session.networkEvents.push({
         method: req.method(),
         url: req.url(),
+        resourceType: req.resourceType(),
         timestamp: Date.now(),
       });
       if (session.networkEvents.length > 500) session.networkEvents.shift();
@@ -74,6 +78,7 @@ export class BrowserManager {
       session.networkEvents.push({
         method: req.method(),
         url: req.url(),
+        resourceType: req.resourceType(),
         failed: true,
         timestamp: Date.now(),
       });
@@ -102,6 +107,7 @@ export class BrowserManager {
       activePageIndex: 0,
       currentSnapshotVersion: 0,
       elementRefs: new Map(),
+      refHistory: new Map(),
       consoleLogs: [],
       networkEvents: [],
       createdAt: Date.now(),

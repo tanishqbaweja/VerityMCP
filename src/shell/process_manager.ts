@@ -336,8 +336,10 @@ export class ProcessManager {
     if (!session) {
       return {
         success: false,
+        error_code: "PROCESS_NOT_FOUND",
         action: `read_process_output "${sessionId}"`,
         text: `Session "${sessionId}" not found.`,
+        summary: `Process session not found`,
         verification: {
           performed: true,
           passed: false,
@@ -379,6 +381,7 @@ export class ProcessManager {
       success: true,
       action: `read_process_output "${sessionId}"`,
       text: lines.join("\n"),
+      summary: `Read ${newChunks.length} chunks from ${session.id} (status: ${session.status})`,
       stdout,
       stderr,
       exitCode: session.exitCode,
@@ -415,8 +418,10 @@ export class ProcessManager {
     if (!session || !session.childProcess || session.status !== "running") {
       return {
         success: false,
+        error_code: "PROCESS_NOT_FOUND",
         action: `write_stdin "${sessionId}"`,
         text: `Cannot write to stdin: Session "${sessionId}" is not running.`,
+        summary: `Cannot write to stdin: session not running`,
         verification: {
           performed: true,
           passed: false,
@@ -433,6 +438,7 @@ export class ProcessManager {
         success: true,
         action: `write_stdin "${sessionId}"`,
         text: `Sent ${Buffer.byteLength(formattedInput)} bytes to session stdin.`,
+        summary: `Sent ${Buffer.byteLength(formattedInput)} bytes to stdin`,
         verification: {
           performed: true,
           passed: true,
@@ -447,8 +453,10 @@ export class ProcessManager {
     } catch (err: any) {
       return {
         success: false,
+        error_code: "COMMAND_FAILED",
         action: `write_stdin "${sessionId}"`,
         text: `Failed writing to process stdin: ${err.message}`,
+        summary: `Failed writing to stdin: ${err.message}`,
         verification: {
           performed: true,
           passed: false,
@@ -468,6 +476,75 @@ export class ProcessManager {
         success: true,
         action: `interrupt_process "${sessionId}"`,
         text: `Session "${sessionId}" is already stopped (status: ${session?.status ?? "unknown"}).`,
+        summary: `Session already stopped`,
+        verification: {
+          performed: true,
+          passed: true,
+          method: "session_status_check",
+        },
+        data: { sessionId },
+      };
+    }
+
+    const pid = session.pid;
+    try {
+      if (session.childProcess.stdin?.writable) {
+        try {
+          session.childProcess.stdin.write("\x03");
+        } catch {}
+      }
+
+      session.childProcess.kill("SIGINT");
+
+      setTimeout(() => {
+        if (session.status === "running") {
+          this.killProcess(sessionId).catch(() => {});
+        }
+      }, 1500);
+
+      session.status = "interrupted";
+      session.endedAt = Date.now();
+
+      return {
+        success: true,
+        action: `interrupt_process "${sessionId}"`,
+        text: `Dispatched interrupt (SIGINT) to process session "${sessionId}" (PID: ${pid}).`,
+        summary: `Dispatched SIGINT to ${sessionId} (PID: ${pid})`,
+        verification: {
+          performed: true,
+          passed: true,
+          method: "interrupt_signal_dispatched",
+          details: { pid },
+        },
+        data: { sessionId, pid },
+      };
+    } catch (err: any) {
+      return {
+        success: false,
+        error_code: "COMMAND_FAILED",
+        action: `interrupt_process "${sessionId}"`,
+        text: `Failed to interrupt process: ${err.message}`,
+        summary: `Interrupt failed: ${err.message}`,
+        verification: {
+          performed: true,
+          passed: false,
+          method: "interrupt_signal",
+          error: err.message,
+        },
+      };
+    }
+  }
+
+  public async killProcess(
+    sessionId: string
+  ): Promise<StandardToolResponse<{ sessionId: string; pid?: number }>> {
+    const session = this.sessions.get(sessionId);
+    if (!session || !session.childProcess || session.status !== "running") {
+      return {
+        success: true,
+        action: `kill_process "${sessionId}"`,
+        text: `Session "${sessionId}" is already terminated (status: ${session?.status ?? "unknown"}).`,
+        summary: `Session already terminated`,
         verification: {
           performed: true,
           passed: true,
@@ -486,12 +563,7 @@ export class ProcessManager {
           session.childProcess.kill("SIGKILL");
         }
       } else {
-        session.childProcess.kill("SIGINT");
-        setTimeout(() => {
-          if (session.status === "running") {
-            session.childProcess?.kill("SIGKILL");
-          }
-        }, 1500);
+        session.childProcess.kill("SIGKILL");
       }
 
       session.status = "interrupted";
@@ -499,12 +571,13 @@ export class ProcessManager {
 
       return {
         success: true,
-        action: `interrupt_process "${sessionId}"`,
-        text: `Successfully terminated process session "${sessionId}" (PID: ${pid}).`,
+        action: `kill_process "${sessionId}"`,
+        text: `Forcefully terminated process tree for session "${sessionId}" (PID: ${pid}).`,
+        summary: `Terminated process tree for ${sessionId} (PID: ${pid})`,
         verification: {
           performed: true,
           passed: true,
-          method: "kill_signal_dispatched",
+          method: "tree_kill_dispatched",
           details: { pid },
         },
         data: { sessionId, pid },
@@ -512,12 +585,14 @@ export class ProcessManager {
     } catch (err: any) {
       return {
         success: false,
-        action: `interrupt_process "${sessionId}"`,
-        text: `Failed to terminate process: ${err.message}`,
+        error_code: "COMMAND_FAILED",
+        action: `kill_process "${sessionId}"`,
+        text: `Failed to kill process: ${err.message}`,
+        summary: `Kill failed: ${err.message}`,
         verification: {
           performed: true,
           passed: false,
-          method: "kill_signal",
+          method: "tree_kill",
           error: err.message,
         },
       };
