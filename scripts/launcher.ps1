@@ -6,6 +6,9 @@ if (-not (Test-Path $cloudflaredPath)) {
     $cloudflaredPath = "cloudflared"
 }
 
+# Clean up any orphaned cloudflared processes from previous sessions
+Get-Process -Name "cloudflared" -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
+
 # Dedicated port for VerityMCP
 $port = 7980
 $portBusy = Get-NetTCPConnection -LocalPort 7980 -State Listen -ErrorAction SilentlyContinue
@@ -26,27 +29,39 @@ $tunnelUrl = $null
 
 try {
     $tunnelProc = Start-Process -FilePath $cloudflaredPath -ArgumentList "tunnel --url http://127.0.0.1:$port" -RedirectStandardError $tempLog -PassThru -NoNewWindow
-    $timeout = [DateTime]::Now.AddSeconds(20)
+    $timeout = [DateTime]::Now.AddSeconds(45)
 
     while ([DateTime]::Now -lt $timeout -and -not $tunnelUrl) {
-        Start-Sleep -Milliseconds 600
+        Start-Sleep -Milliseconds 500
         if (Test-Path $tempLog) {
-            $content = Get-Content $tempLog -Raw -ErrorAction SilentlyContinue
-            if ($content -match '(https://[a-zA-Z0-9-]+\.trycloudflare\.com)') {
-                $tunnelUrl = $matches[1]
-            }
+            try {
+                $fs = [System.IO.File]::Open($tempLog, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+                $sr = [System.IO.StreamReader]::new($fs)
+                $content = $sr.ReadToEnd()
+                $sr.Close()
+                $fs.Close()
+                if ($content -match '(https://[a-zA-Z0-9-]+\.trycloudflare\.com)') {
+                    $tunnelUrl = $matches[1]
+                    break
+                }
+            } catch {}
+        }
+        if ($tunnelProc.HasExited) {
+            Write-Host "[Launcher] Cloudflared process exited unexpectedly with code $($tunnelProc.ExitCode)" -ForegroundColor Yellow
+            break
         }
     }
 } catch {
-    Write-Host "[Launcher] Cloudflare tunnel not found or failed to start. Falling back to local HTTP." -ForegroundColor Yellow
+    Write-Host "[Launcher] Cloudflare tunnel failed to start: $_" -ForegroundColor Yellow
 }
 
 if (-not $tunnelUrl) {
-    Write-Host "[Launcher] Notice: Operating in local-only mode on http://127.0.0.1:$port" -ForegroundColor Yellow
+    Write-Host "[Launcher] Notice: Could not acquire Cloudflare tunnel URL within timeout. Operating in local-only mode on http://127.0.0.1:$port" -ForegroundColor Yellow
     $mcpUrl = "http://127.0.0.1:$port/mcp"
     $tunnelUrl = "http://127.0.0.1:$port"
 } else {
     $mcpUrl = "$tunnelUrl/mcp"
+    Write-Host "[Launcher] Cloudflare tunnel established successfully!" -ForegroundColor Green
 }
 
 # Copy MCP URL to Windows clipboard
