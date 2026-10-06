@@ -89,8 +89,8 @@ export class WorkspaceManager {
       createdAt: Date.now(),
     };
 
+    const prevWorkspaceId = this.defaultWorkspaceId;
     this.activeWorkspaces.set(id, workspace);
-    this.defaultWorkspaceId = id;
 
     const git = {
       branch: gitRes.data?.branch || "none",
@@ -137,6 +137,12 @@ export class WorkspaceManager {
       target: { root },
     });
 
+    // Deactivate previous workspace if switching roots
+    if (prevWorkspaceId && prevWorkspaceId !== id) {
+      await this.deactivateWorkspace(prevWorkspaceId);
+    }
+    this.defaultWorkspaceId = id;
+
     return {
       success: true,
       action: `open_workspace "${root}"`,
@@ -161,6 +167,45 @@ export class WorkspaceManager {
       },
       durationMs: Date.now() - startTime,
     };
+  }
+
+  private disposables = new Map<string, Array<() => Promise<void> | void>>();
+
+  public registerDisposable(workspaceKey: string, fn: () => Promise<void> | void): void {
+    const list = this.disposables.get(workspaceKey) || [];
+    list.push(fn);
+    this.disposables.set(workspaceKey, list);
+  }
+
+  public async deactivateWorkspace(idOrRoot: string): Promise<void> {
+    const ws = this.activeWorkspaces.get(idOrRoot) || Array.from(this.activeWorkspaces.values()).find((w) => w.root === idOrRoot);
+    const key = ws ? ws.id : idOrRoot;
+    const rootKey = ws ? ws.root : idOrRoot;
+
+    const funcs = [...(this.disposables.get(key) || []), ...(this.disposables.get(rootKey) || [])];
+    this.disposables.delete(key);
+    this.disposables.delete(rootKey);
+
+    for (const fn of funcs) {
+      try {
+        await fn();
+      } catch {}
+    }
+  }
+
+  public async closeWorkspace(id?: string): Promise<{ success: boolean; closedId?: string }> {
+    const targetId = id || this.defaultWorkspaceId;
+    if (!targetId || !this.activeWorkspaces.has(targetId)) {
+      return { success: false };
+    }
+
+    await this.deactivateWorkspace(targetId);
+    this.activeWorkspaces.delete(targetId);
+
+    if (this.defaultWorkspaceId === targetId) {
+      this.defaultWorkspaceId = this.activeWorkspaces.keys().next().value;
+    }
+    return { success: true, closedId: targetId };
   }
 
   public getWorkspace(id?: string): Workspace | undefined {

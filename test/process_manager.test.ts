@@ -21,7 +21,7 @@ describe("VerityMCP Process Runtime", () => {
     const pm = new ProcessManager();
     // Run background command in powershell that produces output
     const res = await pm.execCommand({
-      command: 'Write-Output "VerityMCP Background Output Test"; Start-Sleep -Milliseconds 100',
+      command: 'Write-Output "VerityMCP Background Output Test"; Start-Sleep -Milliseconds 700',
       cwd: process.cwd(),
       shell: "powershell",
       runInBackground: true,

@@ -34,6 +34,8 @@ export interface LspSymbolInfo {
 export async function executeLsp(options: LspToolOptions): Promise<StandardToolResponse<{
   operation: LspOperation;
   result: any;
+  requested_position?: { line: number; character: number };
+  lsp_position?: { line: number; character: number };
 }>> {
   const startTime = Date.now();
   const {
@@ -133,11 +135,33 @@ export async function executeLsp(options: LspToolOptions): Promise<StandardToolR
     };
   }
 
+  const lspLine = Math.max(0, line - 1);
+  const colIdx = Math.max(0, character - 1);
+  const requested_position = { line, character };
+  const lsp_position = { line: lspLine, character: colIdx };
+
+  // Helper: Find exact symbol at UTF-16 column offset using regex token boundary matching
+  const findSymbolAtOffset = (lineText: string, offset: number): string => {
+    if (!lineText) return "";
+    const regex = /[A-Za-z0-9_$]+/g;
+    let match: RegExpExecArray | null;
+    let fallback: string = "";
+    while ((match = regex.exec(lineText)) !== null) {
+      const start = match.index;
+      const end = match.index + match[0].length;
+      if (offset >= start && offset <= end) {
+        return match[0];
+      }
+      if (offset >= start) {
+        fallback = match[0];
+      }
+    }
+    return fallback;
+  };
+
   if (operation === "hover") {
-    const targetLine = lines[line - 1] || "";
-    const colIdx = Math.max(0, character - 1);
-    const words = targetLine.match(/[A-Za-z0-9_$]+/g) || [];
-    const symbol = words.find((w) => targetLine.indexOf(w) <= colIdx && targetLine.indexOf(w) + w.length >= colIdx) || words[0] || "";
+    const targetLine = lines[lspLine] || "";
+    const symbol = findSymbolAtOffset(targetLine, colIdx) || query || "";
 
     const text = `Hover info at ${filePath}:${line}:${character} for "${symbol}":\n\`\`\`typescript\n${targetLine.trim()}\n\`\`\``;
     return {
@@ -145,42 +169,62 @@ export async function executeLsp(options: LspToolOptions): Promise<StandardToolR
       action: `lsp_hover "${filePath}:${line}:${character}"`,
       text,
       verification: { performed: true, passed: true, method: "lsp_hover_query" },
-      data: { operation, result: { symbol, line, character, text: targetLine.trim() } },
+      data: {
+        operation,
+        requested_position,
+        lsp_position,
+        result: { symbol, line, character, text: targetLine.trim() },
+      },
       durationMs: Date.now() - startTime,
     };
   }
 
   if (operation === "goToDefinition" || operation === "typeDefinition") {
-    const targetLine = lines[line - 1] || "";
-    const words = targetLine.match(/[A-Za-z0-9_$]+/g) || [];
-    const symbol = words[0] || query || "symbol";
+    const targetLine = lines[lspLine] || "";
+    const symbol = findSymbolAtOffset(targetLine, colIdx) || query || "symbol";
 
     // Use ripgrep to find definition in codebase
-    const searchRes = executeSearchCode({
+    let searchRes = executeSearchCode({
       workspaceRoot,
       allowedRoots,
-      query: `(class|function|interface|type|const|let|var) ${symbol}\\b`,
+      query: `(class|function|interface|type|const|let|var)\\s+${symbol}\\b`,
       globFilter: "*.ts",
       maxResults: 5,
     });
 
-    const matches = searchRes.data?.matches || [];
+    let matches = searchRes.data?.matches || [];
+    if (matches.length === 0) {
+      // Fallback search for property, parameter, or assignment definition
+      searchRes = executeSearchCode({
+        workspaceRoot,
+        allowedRoots,
+        query: `\\b${symbol}\\s*[:=]`,
+        globFilter: "*.ts",
+        maxResults: 5,
+      });
+      matches = searchRes.data?.matches || [];
+    }
+
     const found = matches[0] || { filePath: filePath || "", line: 1, lineText: targetLine };
 
     return {
       success: true,
       action: `lsp_${operation} "${symbol}"`,
       text: `Definition for "${symbol}": Found at ${found.filePath}:${found.line}\n${found.lineText}`,
-      verification: { performed: true, passed: true, method: "lsp_definition_query", details: { found } },
-      data: { operation, result: found },
+      verification: { performed: true, passed: true, method: "lsp_definition_query", details: { symbol, found } },
+      data: {
+        operation,
+        requested_position,
+        lsp_position,
+        result: { ...found, symbol },
+      },
       durationMs: Date.now() - startTime,
     };
   }
 
   if (operation === "findReferences") {
-    const targetLine = lines[line - 1] || "";
-    const words = targetLine.match(/[A-Za-z0-9_$]+/g) || [];
-    const symbol = words[0] || query || "symbol";
+    const targetLine = lines[lspLine] || "";
+    const symbol = findSymbolAtOffset(targetLine, colIdx) || query || "symbol";
 
     const searchRes = executeSearchCode({
       workspaceRoot,
@@ -196,8 +240,13 @@ export async function executeLsp(options: LspToolOptions): Promise<StandardToolR
       success: true,
       action: `lsp_findReferences "${symbol}"`,
       text: `References for "${symbol}" (${matches.length} found):\n${linesOut.join("\n")}`,
-      verification: { performed: true, passed: true, method: "lsp_references_query", details: { count: matches.length } },
-      data: { operation, result: matches },
+      verification: { performed: true, passed: true, method: "lsp_references_query", details: { symbol, count: matches.length } },
+      data: {
+        operation,
+        requested_position,
+        lsp_position,
+        result: matches,
+      },
       durationMs: Date.now() - startTime,
     };
   }

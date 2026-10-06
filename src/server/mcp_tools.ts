@@ -4,6 +4,7 @@ import type { VerityConfig } from "../types/index.js";
 import { formatMcpResponse, type McpToolResponse } from "./response.js";
 import { getMonitorHtml } from "../ui/monitor_html.js";
 import { runManager } from "../runs/run_manager.js";
+import { summarizeRunResources } from "../runs/utils.js";
 import { workspaceManager } from "../workspace/workspace_manager.js";
 import { discoverSkills, readSkillContent } from "../workspace/skills.js";
 import { executeReadFile } from "../filesystem/read_file.js";
@@ -26,6 +27,7 @@ import { browserManager } from "../browser/browser_manager.js";
 import { takeBrowserSnapshot } from "../browser/snapshot.js";
 import {
   executeNavigate,
+  navigateAndVerify,
   executeReload,
   executeGoBack,
   executeGoForward,
@@ -76,6 +78,7 @@ import {
 } from "../observability/activity_stream.js";
 import { detectEnvironment } from "../environment/env_detector.js";
 import { observabilityManager } from "../observability/diagnostics.js";
+import { runBlackboxTest } from "../observability/blackbox_test.js";
 
 export function createVerityMcpServer(config: VerityConfig): McpServer {
   const server = new McpServer(
@@ -108,12 +111,23 @@ DURABLE EXECUTION & RECOVERY INSTRUCTIONS:
       mimeType: "text/html;profile=mcp-app",
     },
     async (uri) => {
+      let runId: string | undefined = undefined;
+      try {
+        const parsed = new URL(uri.href);
+        runId = parsed.searchParams.get("run_id") || undefined;
+      } catch {}
+      const runObj = runId ? await runManager.getRun(runId) : null;
+      const targetRun = runObj?.run || runManager.getActiveRun();
       return {
         contents: [
           {
             uri: uri.href,
             mimeType: "text/html;profile=mcp-app",
-            text: getMonitorHtml(),
+            text: getMonitorHtml({
+              runId: targetRun?.run_id || runId,
+              projectKey: targetRun?.project_key,
+              taskKey: targetRun?.task_key,
+            }),
           },
         ],
       };
@@ -172,6 +186,9 @@ DURABLE EXECUTION & RECOVERY INSTRUCTIONS:
     "run_activity_read",
     "find_runs",
     "adopt_run",
+    "maintenance_runs",
+    "verity_blackbox_test",
+    "verity_robustness_test",
   ]);
 
   function formatToolDisplayTitle(toolName: string, args: any): string {
@@ -268,6 +285,11 @@ DURABLE EXECUTION & RECOVERY INSTRUCTIONS:
         return `Finding runs matching "${args?.query || ""}"`;
       case "adopt_run":
         return `Adopting run: ${args?.run_id || ""}`;
+      case "maintenance_runs":
+        return `Run maintenance: ${args?.mode || "archive"} (dry_run: ${args?.dry_run !== false})`;
+      case "verity_blackbox_test":
+      case "verity_robustness_test":
+        return `Seeded black-box robustness battery${args?.seed ? ` (seed: ${args.seed})` : ""}`;
       default:
         return toolName.replace(/_/g, " ");
     }
@@ -357,6 +379,11 @@ DURABLE EXECUTION & RECOVERY INSTRUCTIONS:
         return `Search prior runs across conversations using multi-signal contextual ranking`;
       case "adopt_run":
         return `Adopt a historical or interrupted run into the active session`;
+      case "maintenance_runs":
+        return `Maintain internal test run history without modifying user runs`;
+      case "verity_blackbox_test":
+      case "verity_robustness_test":
+        return `Validate orthogonal subsystems with dynamic fixtures, reproducible PRNG data, and verified cleanup`;
       default:
         return `Execute ${toolName} operation`;
     }
@@ -366,6 +393,7 @@ DURABLE EXECUTION & RECOVERY INSTRUCTIONS:
     if (!args || typeof args !== "object") return undefined;
     if (args.run_id) return args.run_id;
     if (args.goal) return args.goal;
+    if (args.session_id) return args.session_id;
     if (args.file_path) return args.file_path;
     if (args.path) return args.path;
     if (args.url) return args.url;
@@ -374,7 +402,6 @@ DURABLE EXECUTION & RECOVERY INSTRUCTIONS:
     if (args.ref) return args.ref;
     if (args.query) return args.query;
     if (args.process_id) return args.process_id;
-    if (args.session_id) return args.session_id;
     return undefined;
   }
 
@@ -964,16 +991,79 @@ DURABLE EXECUTION & RECOVERY INSTRUCTIONS:
       url: z.string().optional().describe("Initial URL to open."),
     },
     async ({ session_id = "default", url }) => {
+      // 1. Separate session creation: create/retrieve session
       const session = await browserManager.getSession(session_id);
+
+      // 2. If URL supplied: verify navigation outcome
       if (url) {
-        await executeNavigate(session, url);
+        const page = browserManager.getActivePage(session);
+        const navRes = await navigateAndVerify(page, url);
+
+        if (!navRes.success) {
+          return formatMcpResponse({
+            success: false,
+            error_code: "BROWSER_NAVIGATION_FAILED",
+            action: `browser_open "${session_id}"`,
+            text: `Browser session "${session_id}" was created, but initial navigation failed.\nRequested: ${url}\nFinal page: ${navRes.finalUrl}\nError: ${navRes.error}`,
+            summary: `Browser session "${session_id}" created, but initial navigation failed: ${navRes.error}`,
+            verification: {
+              performed: true,
+              passed: false,
+              method: "browser_initial_navigation",
+              error: navRes.error,
+            },
+            data: {
+              success: false,
+              error_code: "BROWSER_NAVIGATION_FAILED",
+              session_created: true,
+              navigation_succeeded: false,
+              requested_url: url,
+              final_url: navRes.finalUrl,
+              browser_session_id: session_id,
+              browser_session_retained: true,
+              error: navRes.error,
+              status: navRes.status,
+            },
+          });
+        }
+
+        return formatMcpResponse({
+          success: true,
+          action: `browser_open "${session_id}"`,
+          text: `Browser session "${session_id}" is active at ${navRes.finalUrl}. (Title: "${navRes.title}", HTTP ${navRes.status})`,
+          summary: `Browser session "${session_id}" active at ${navRes.finalUrl}`,
+          verification: { performed: true, passed: true, method: "browser_session_init" },
+          data: {
+            sessionId: session_id,
+            session_id,
+            session_created: true,
+            navigation_succeeded: true,
+            browser_session_retained: true,
+            requested_url: url,
+            final_url: navRes.finalUrl,
+            url: navRes.finalUrl,
+            title: navRes.title,
+            status: navRes.status,
+          },
+        });
       }
+
+      // If no URL supplied, session creation alone is sufficient
+      const currentUrl = session.pages[session.activePageIndex]?.url() || "";
       return formatMcpResponse({
         success: true,
         action: `browser_open "${session_id}"`,
         text: `Browser session "${session_id}" is active.`,
+        summary: `Browser session "${session_id}" is active`,
         verification: { performed: true, passed: true, method: "browser_session_init" },
-        data: { sessionId: session_id },
+        data: {
+          sessionId: session_id,
+          session_id,
+          session_created: true,
+          navigation_succeeded: true,
+          browser_session_retained: true,
+          url: currentUrl,
+        },
       });
     }
   );
@@ -1228,10 +1318,24 @@ DURABLE EXECUTION & RECOVERY INSTRUCTIONS:
     {
       session_id: z.string().optional().describe("Browser session ID."),
       output_path: z.string().optional().describe("Optional path where the trace zip should be saved."),
+      artifact_role: z.enum(["temporary_test", "user_output", "persistent_project_file"]).optional().describe("Lifecycle role for trace archive (defaults to temporary_test)."),
     },
-    async ({ session_id = "default", output_path }) => {
+    async ({ session_id = "default", output_path, artifact_role }) => {
       const session = await browserManager.getSession(session_id);
       const res = await executeTraceStop(session, output_path);
+      if (res.data?.tracePath && runManager.getActiveRun()) {
+        const role = artifact_role || "temporary_test";
+        await runManager.trackTemporaryFile(
+          res.data.tracePath,
+          `Browser diagnostic trace (${session_id})`,
+          role === "temporary_test",
+          role,
+          {
+            tool: "browser_trace_stop",
+            browser_session_id: session_id,
+          }
+        );
+      }
       return formatMcpResponse(res);
     }
   );
@@ -1399,10 +1503,24 @@ DURABLE EXECUTION & RECOVERY INSTRUCTIONS:
     {
       output_path: z.string().optional().describe("Output PDF file path."),
       session_id: z.string().optional(),
+      artifact_role: z.enum(["temporary_test", "user_output", "persistent_project_file"]).optional().describe("Lifecycle role for PDF export (defaults to user_output)."),
     },
-    async ({ output_path, session_id = "default" }) => {
+    async ({ output_path, session_id = "default", artifact_role }) => {
       const session = await browserManager.getSession(session_id);
       const res = await executePdf(session, output_path);
+      if (res.data?.filePath && runManager.getActiveRun()) {
+        const role = artifact_role || "user_output";
+        await runManager.trackTemporaryFile(
+          res.data.filePath,
+          `Browser PDF export (${session_id})`,
+          role === "temporary_test",
+          role,
+          {
+            tool: "browser_pdf",
+            browser_session_id: session_id,
+          }
+        );
+      }
       return formatMcpResponse(res);
     }
   );
@@ -1457,14 +1575,32 @@ DURABLE EXECUTION & RECOVERY INSTRUCTIONS:
       full_page: z.boolean().optional().describe("Capture full scrollable page. Defaults to false."),
       output_path: z.string().optional().describe("Optional path to save screenshot file."),
       session_id: z.string().optional().describe("Browser session ID."),
+      artifact_role: z.enum(["temporary_test", "user_output", "persistent_project_file"]).optional().describe("Lifecycle role for screenshot (defaults to temporary_test)."),
     },
-    async ({ full_page, output_path, session_id = "default" }) => {
+    async ({ full_page, output_path, session_id = "default", artifact_role }) => {
       const session = await browserManager.getSession(session_id);
       const res = await executeBrowserScreenshot({
         session,
         outputPath: output_path,
         fullPage: full_page ?? false,
       });
+      if (res.toolResponse.data?.filePath && runManager.getActiveRun()) {
+        const role = artifact_role || "temporary_test";
+        await runManager.trackTemporaryFile(
+          res.toolResponse.data.filePath,
+          `Browser screenshot (${session_id})`,
+          role === "temporary_test",
+          role,
+          {
+            tool: "browser_screenshot",
+            browser_session_id: session_id,
+            sha256: res.toolResponse.data.sha256,
+            bytes: res.toolResponse.data.bytes,
+            width: res.toolResponse.data.width,
+            height: res.toolResponse.data.height,
+          }
+        );
+      }
       return formatMcpResponse(res.toolResponse, { image: res.imagePayload });
     }
   );
@@ -1476,9 +1612,26 @@ DURABLE EXECUTION & RECOVERY INSTRUCTIONS:
     {
       output_path: z.string().optional(),
       region: z.object({ x: z.number(), y: z.number(), width: z.number(), height: z.number() }).optional(),
+      artifact_role: z.enum(["temporary_test", "user_output", "persistent_project_file"]).optional().describe("Lifecycle role for desktop screenshot (defaults to temporary_test)."),
     },
-    async ({ output_path, region }) => {
+    async ({ output_path, region, artifact_role }) => {
       const res = await executeDesktopScreenshot({ outputPath: output_path, region });
+      if (res.toolResponse.data?.filePath && runManager.getActiveRun()) {
+        const role = artifact_role || "temporary_test";
+        await runManager.trackTemporaryFile(
+          res.toolResponse.data.filePath,
+          "Desktop screenshot",
+          role === "temporary_test",
+          role,
+          {
+            tool: "screenshot_desktop",
+            sha256: res.toolResponse.data.sha256,
+            bytes: res.toolResponse.data.bytes,
+            width: res.toolResponse.data.width,
+            height: res.toolResponse.data.height,
+          }
+        );
+      }
       return formatMcpResponse(res.toolResponse, { image: res.imagePayload });
     }
   );
@@ -1801,49 +1954,92 @@ DURABLE EXECUTION & RECOVERY INSTRUCTIONS:
     "activity_monitor",
     "Returns live execution status, current action in flight with WHY/target, recent events summary, and user-facing Live Activity Monitor UI URL (e.g. http://localhost:port/monitor).",
     {
+      run_id: z.string().optional().describe("Durable run ID to bind this monitor instance to. Defaults to the active run if one exists."),
       limit: z.number().int().positive().optional().describe("Number of recent events to include in summary. Defaults to 10."),
     },
-    async ({ limit }) => {
+    async ({ run_id, limit }) => {
       const port = config.port || 3000;
-      const monitorUrl = `http://localhost:${port}/monitor`;
-      const currentAction = activityStream.getCurrentAction();
-      const recent = activityStream.read({ limit: limit ?? 10 });
-      const totalRetained = activityStream.size();
+      const runObj = run_id ? await runManager.getRun(run_id) : null;
+      const targetRun = runObj?.run || runManager.getActiveRun();
+      const boundRunId = targetRun?.run_id || run_id;
+      const monitorUrl = boundRunId
+        ? `http://localhost:${port}/monitor?run_id=${encodeURIComponent(boundRunId)}`
+        : `http://localhost:${port}/monitor`;
+      const uiResourceUri = boundRunId
+        ? `ui://verity/activity-monitor?run_id=${encodeURIComponent(boundRunId)}`
+        : "ui://verity/activity-monitor";
+
+      const currentAction = (boundRunId && targetRun)
+        ? targetRun.current_action
+        : activityStream.getCurrentAction();
+
+      let recentEvents: any[] = [];
+      let totalRetained = 0;
+
+      if (boundRunId) {
+        const journal = await runManager.readRunEvents(boundRunId, 0, limit ?? 10);
+        recentEvents = journal.events;
+        totalRetained = (journal as any).total_available ?? journal.events.length;
+      } else {
+        const recent = activityStream.read({ limit: limit ?? 10 });
+        recentEvents = recent.events;
+        totalRetained = activityStream.size();
+      }
+
+      let actionTitle = "";
+      let actionStatus = "running";
+      let actionPurpose = "";
+      let actionTarget = "";
+      if (typeof currentAction === "string") {
+        actionTitle = currentAction;
+      } else if (currentAction && typeof currentAction === "object") {
+        const actObj = currentAction as any;
+        actionTitle = actObj.display_title || actObj.title || "";
+        actionStatus = actObj.status || "running";
+        actionPurpose = actObj.purpose || "";
+        actionTarget = typeof actObj.target === "object" ? JSON.stringify(actObj.target) : String(actObj.target || "");
+      }
 
       const summaryLines = [
         `Live Activity Monitor: ${monitorUrl}`,
         `Server State: ${currentAction ? "WORKING" : "IDLE"}`,
         currentAction
-          ? `Current Action: ${currentAction.display_title || currentAction.title} [${currentAction.status || "running"}]${currentAction.purpose ? ` (Why: ${currentAction.purpose})` : ""}${currentAction.target ? ` | Target: ${typeof currentAction.target === "object" ? JSON.stringify(currentAction.target) : currentAction.target}` : ""}`
+          ? `Current Action: ${actionTitle} [${actionStatus}]${actionPurpose ? ` (Why: ${actionPurpose})` : ""}${actionTarget ? ` | Target: ${actionTarget}` : ""}`
           : "Current Action: None (idle / waiting for agent instruction)",
+        ...(boundRunId ? [`Bound Run: ${boundRunId}`] : []),
         `Total Retained Events: ${totalRetained}`,
-        `Recent Events (${recent.events.length}):`,
-        ...recent.events.map((e) => `  [#${e.seq}] [${e.type}] ${e.display_title || e.title}${e.purpose ? ` (Why: ${e.purpose})` : ""}${e.status ? ` - ${e.status}` : ""}`),
+        `Recent Events (${recentEvents.length}):`,
+        ...recentEvents.map((e: any) => `  [#${e.seq}] [${e.type}] ${e.display_title || e.title}${e.purpose ? ` (Why: ${e.purpose})` : ""}${e.status ? ` - ${e.status}` : ""}`),
       ];
 
       return formatMcpResponse(
         {
           success: true,
           action: "activity_monitor",
-          display_title: "Activity Monitor Status",
+          display_title: boundRunId ? `Activity Monitor (${boundRunId})` : "Activity Monitor Status",
           display_status: currentAction ? "running" : "completed",
           text: summaryLines.join("\n"),
           data: {
             monitor_url: monitorUrl,
-            sse_stream_url: `http://localhost:${port}/activity/stream`,
-            poll_events_url: `http://localhost:${port}/activity/events`,
-            ui_resource: "ui://verity/activity-monitor",
+            sse_stream_url: `http://localhost:${port}/activity/stream${boundRunId ? `?run_id=${encodeURIComponent(boundRunId)}` : ""}`,
+            poll_events_url: `http://localhost:${port}/activity/events${boundRunId ? `?run_id=${encodeURIComponent(boundRunId)}` : ""}`,
+            ui_resource: uiResourceUri,
+            run_id: boundRunId,
             current_action: currentAction,
             total_retained: totalRetained,
-            recent_events: recent.events,
+            recent_events: recentEvents,
           },
           verification: { performed: true, passed: true, method: "activity_stream_monitor" },
         },
         {
           resource: {
-            uri: "ui://verity/activity-monitor",
+            uri: uiResourceUri,
             mimeType: "text/html;profile=mcp-app",
-            text: getMonitorHtml(),
+            text: getMonitorHtml({
+              runId: boundRunId,
+              projectKey: targetRun?.project_key,
+              taskKey: targetRun?.task_key,
+            }),
           },
         }
       );
@@ -1959,6 +2155,8 @@ DURABLE EXECUTION & RECOVERY INSTRUCTIONS:
       tags: z.array(z.string()).optional().describe("Tags categorizing the run."),
       idempotency_key: z.string().optional().describe("Client idempotency key to prevent duplicate runs from rapid replays."),
       conversation_id: z.string().optional().describe("Originating ChatGPT conversation ID for cross-chat tracking."),
+      internal_test: z.boolean().optional().describe("Marks run as an internal test run, excluding it from default user run searches."),
+      run_kind: z.enum(["user_work", "internal_test", "benchmark"]).optional().describe("Kind of run."),
       phases: z
         .array(
           z.object({
@@ -1970,7 +2168,7 @@ DURABLE EXECUTION & RECOVERY INSTRUCTIONS:
         .optional()
         .describe("Execution phases for tracking progress."),
     },
-    async ({ goal, workspace, purpose, project_key, task_key, tags, idempotency_key, conversation_id, phases }) => {
+    async ({ goal, workspace, purpose, project_key, task_key, tags, idempotency_key, conversation_id, phases, internal_test, run_kind }) => {
       const targetWs = workspace || workspaceManager.getActiveWorkspaceRoot() || process.cwd();
       const res = await runManager.startRun({
         goal,
@@ -1982,6 +2180,8 @@ DURABLE EXECUTION & RECOVERY INSTRUCTIONS:
         idempotency_key,
         conversation_id,
         phases: phases as any,
+        internal_test,
+        run_kind,
       });
 
       return formatMcpResponse(
@@ -2085,6 +2285,7 @@ DURABLE EXECUTION & RECOVERY INSTRUCTIONS:
     },
     async ({ run_id }) => {
       const recovery = await runManager.resumeRun(run_id);
+      const resSummary = recovery.resource_summary || summarizeRunResources(recovery as any);
       const summaryLines = [
         `=== Recovered VerityMCP Run: ${recovery.recovered_run_id} ===`,
         `Original Goal: ${recovery.original_goal}`,
@@ -2100,9 +2301,23 @@ DURABLE EXECUTION & RECOVERY INSTRUCTIONS:
         ``,
         `Remaining Steps (${recovery.current_remaining_steps.length}):`,
         ...recovery.current_remaining_steps.map((s) => `  ○ ${s}`),
+        `Active Resources:`,
+        `  Browsers: ${resSummary.browsers.active}`,
+        `  Processes: ${resSummary.processes.running}`,
+        `  Worktrees: ${resSummary.worktrees.active}`,
         ``,
-        `Cleanup Debt: ${recovery.cleanup_debt.filter((c) => !c.resolved).length} unresolved item(s)`,
-        `Active Resources: ${recovery.active_resources.browser_sessions.length} browser(s), ${recovery.active_resources.process_sessions.length} process(es)`,
+        `Historical Resources:`,
+        `  Browsers: ${resSummary.browsers.historical}`,
+        `  Processes: ${resSummary.processes.historical}`,
+        `  Worktrees: ${resSummary.worktrees.historical}`,
+        ``,
+        `Temporary Artifacts:`,
+        `  Existing: ${resSummary.artifacts.existingTemporary}`,
+        `  Historical: ${resSummary.artifacts.historicalTemporary}`,
+        ``,
+        `Cleanup Debt:`,
+        `  Unresolved: ${resSummary.cleanupDebt.unresolved}`,
+        `  Resolved: ${resSummary.cleanupDebt.resolved}`,
         `Last Checkpoint: ${recovery.last_checkpoint_timestamp || "None"}`,
         ``,
         recovery.instruction_for_agent,
@@ -2128,15 +2343,23 @@ DURABLE EXECUTION & RECOVERY INSTRUCTIONS:
   // 73. complete_run
   registerTool(
     "complete_run",
-    "Marks a durable run as completed, auditing cleanup debt, open browser sessions, and running processes.",
+    "Marks a durable run as completed, auditing cleanup debt, open browser sessions, and running processes. Blocks completion if pending steps or unresolved cleanup debt remains unless explicit override is provided.",
     {
       run_id: z.string().optional().describe("Run ID to complete. Defaults to active run."),
       status: z.enum(["completed", "failed", "abandoned"]).optional().describe("Final run status. Defaults to 'completed'."),
       notes: z.string().optional().describe("Final completion notes or verification findings."),
       resolve_pending: z.boolean().optional().describe("If true, automatically marks remaining pending steps as resolved so run can complete."),
+      allow_cleanup_debt: z.boolean().optional().describe("If true, allows completion even if unresolved cleanup debt or active resources exist."),
+      force: z.boolean().optional().describe("Alias for allow_cleanup_debt."),
     },
-    async ({ run_id, status, notes, resolve_pending }) => {
-      const res = await runManager.completeRun(run_id, { status, notes, resolve_pending });
+    async ({ run_id, status, notes, resolve_pending, allow_cleanup_debt, force }) => {
+      const res = await runManager.completeRun(run_id, {
+        status,
+        notes,
+        resolve_pending,
+        allow_cleanup_debt: Boolean(allow_cleanup_debt || force),
+        force: Boolean(allow_cleanup_debt || force),
+      });
       if (res.error_code === "RUN_HAS_PENDING_STEPS") {
         return formatMcpResponse({
           success: false,
@@ -2146,6 +2369,19 @@ DURABLE EXECUTION & RECOVERY INSTRUCTIONS:
           summary: `Run completion blocked: pending steps remain`,
           data: res,
           error_code: "RUN_HAS_PENDING_STEPS",
+          warnings: res.cleanup_warnings,
+          verification: { performed: true, passed: false, method: "run_completion_audit" },
+        });
+      }
+      if (res.error_code === "RUN_HAS_CLEANUP_DEBT") {
+        return formatMcpResponse({
+          success: false,
+          action: `complete_run "${res.run.run_id}"`,
+          display_title: `Run completion blocked: ${res.run.run_id}`,
+          text: res.cleanup_warnings.join("\n"),
+          summary: `Run completion blocked: unresolved cleanup debt remains`,
+          data: res,
+          error_code: "RUN_HAS_CLEANUP_DEBT",
           warnings: res.cleanup_warnings,
           verification: { performed: true, passed: false, method: "run_completion_audit" },
         });
@@ -2175,7 +2411,7 @@ DURABLE EXECUTION & RECOVERY INSTRUCTIONS:
     "list_runs",
     "Lists all durable runs stored under <server_root>/.verity with status, goal, timestamps, and step counts.",
     {
-      status: z.enum(["all", "running", "interrupted", "completed", "failed", "abandoned"]).optional().describe("Filter by status. Defaults to all."),
+      status: z.enum(["all", "running", "interrupted", "needs_cleanup", "completed", "failed", "abandoned"]).optional().describe("Filter by status. Defaults to all."),
       limit: z.number().int().positive().optional().describe("Maximum runs to return. Defaults to 20."),
     },
     async ({ status, limit }) => {
@@ -2261,15 +2497,17 @@ DURABLE EXECUTION & RECOVERY INSTRUCTIONS:
       project_key: z.string().optional().describe("Project key filter (e.g. trebell-code)."),
       task_key: z.string().optional().describe("Task key filter (e.g. native-harness-benchmark-optimization)."),
       statuses: z.array(z.enum(["running", "interrupted", "completed", "failed", "abandoned", "needs_cleanup"])).optional().describe("Filter by statuses."),
+      include_internal_tests: z.boolean().optional().describe("Whether to include internal synthetic test runs (defaults to false)."),
       limit: z.number().int().positive().optional().describe("Maximum candidates to return. Defaults to 10."),
     },
-    async ({ query, workspace, project_key, task_key, statuses, limit }) => {
+    async ({ query, workspace, project_key, task_key, statuses, include_internal_tests, limit }) => {
       const res = await runManager.findRuns({
         query,
         workspace,
         project_key,
         task_key,
         statuses,
+        include_internal_tests,
         limit,
       });
 
@@ -2337,6 +2575,90 @@ DURABLE EXECUTION & RECOVERY INSTRUCTIONS:
         data: res,
         verification: { performed: true, passed: true, method: "run_adoption" },
       });
+    }
+  );
+
+  // 79. maintenance_runs
+  registerTool(
+    "maintenance_runs",
+    "Performs safe retention maintenance on accumulated internal synthetic/acceptance test runs under <server_root>/.verity. User runs are NEVER pruned or archived.",
+    {
+      dry_run: z.boolean().optional().describe("If true (default), simulates maintenance without moving or deleting files."),
+      keep_latest: z.number().int().nonnegative().optional().describe("Number of most recent internal test runs to retain. Defaults to 50."),
+      older_than_days: z.number().nonnegative().optional().describe("Only internal test runs older than this threshold (in days) beyond keep_latest are eligible. Defaults to 7."),
+      internal_tests_only: z.boolean().optional().describe("Guaranteed true. Real user runs are strictly protected and never touched."),
+      mode: z.enum(["archive", "delete"]).optional().describe("Maintenance mode: 'archive' moves runs to .verity/archives/internal/ (default), 'delete' permanently removes."),
+    },
+    async ({ dry_run, keep_latest, older_than_days, internal_tests_only, mode }) => {
+      const res = await runManager.maintenanceRuns({
+        dry_run: dry_run ?? true,
+        keep_latest: keep_latest ?? 50,
+        older_than_days: older_than_days ?? 7,
+        internal_tests_only: internal_tests_only ?? true,
+        mode: mode ?? "archive",
+      });
+
+      const lines = [
+        `=== VerityMCP Run Maintenance (${res.dry_run ? "DRY RUN - SIMULATION ONLY" : "APPLIED"}) ===`,
+        `Mode: ${res.mode.toUpperCase()}`,
+        `Target Directory: ${res.archive_directory}`,
+        `Internal Test Runs Scanned: ${res.scanned_internal_total}`,
+        `Protected Active Internal Runs: ${res.protected_active_internal}`,
+        `Eligible Historical Internal Runs: ${res.eligible_historical_internal}`,
+        `Historical Retained by Policy: ${res.retained_historical_internal}`,
+        `${res.mode === "archive" ? "Archived" : "Deleted"}: ${res.dry_run ? res.eligible_count : res.processed_count}`,
+        `Internal Runs Remaining in Active Store: ${res.remaining_internal_active_store}`,
+        `User Runs Protected: ${res.user_runs_protected} (NEVER modified)`,
+        `User Runs Affected: ${res.user_runs_affected}`,
+      ];
+
+      if (res.candidates.length > 0) {
+        lines.push(``, `Candidates (${res.candidates.length}):`);
+        for (const c of res.candidates.slice(0, 20)) {
+          lines.push(`  - [${c.age_days}d old] ${c.run_id} (${c.task_key || "internal"})`);
+        }
+        if (res.candidates.length > 20) {
+          lines.push(`  ... and ${res.candidates.length - 20} more candidates`);
+        }
+      }
+
+      return formatMcpResponse({
+        success: true,
+        action: "maintenance_runs",
+        display_title: `Run maintenance: ${res.mode} (${res.dry_run ? "dry-run" : `${res.processed_count} processed`})`,
+        text: lines.join("\n"),
+        summary: `Run maintenance (${res.dry_run ? "dry-run" : res.mode}): ${res.eligible_count} eligible, ${res.processed_count} processed, ${res.user_runs_protected} user runs protected`,
+        data: res,
+        verification: { performed: true, passed: true, method: "run_maintenance_audit" },
+      });
+    }
+  );
+
+  // 80. verity_blackbox_test
+  registerTool(
+    "verity_blackbox_test",
+    "Runs an orthogonal, seeded black-box robustness test battery validating filesystem, code intelligence, processes, git, browser, desktop, and tasks with full self-cleanup.",
+    {
+      seed: z.string().optional().describe("Optional seed for reproducible pseudo-random execution. Defaults to current timestamp."),
+      workspace_root: z.string().optional().describe("Optional workspace root for test context."),
+    },
+    async ({ seed, workspace_root }) => {
+      const res = await runBlackboxTest({ seed, workspaceRoot: workspace_root });
+      return formatMcpResponse(res);
+    }
+  );
+
+  // 81. verity_robustness_test (alias for verity_blackbox_test)
+  registerTool(
+    "verity_robustness_test",
+    "Alias for verity_blackbox_test: runs an orthogonal, seeded black-box robustness test battery with full self-cleanup.",
+    {
+      seed: z.string().optional().describe("Optional seed for reproducible pseudo-random execution. Defaults to current timestamp."),
+      workspace_root: z.string().optional().describe("Optional workspace root for test context."),
+    },
+    async ({ seed, workspace_root }) => {
+      const res = await runBlackboxTest({ seed, workspaceRoot: workspace_root });
+      return formatMcpResponse(res);
     }
   );
 
