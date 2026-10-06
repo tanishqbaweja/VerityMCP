@@ -1,7 +1,7 @@
 import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
-import type { RunMetadata, RunMatchEvidence } from "./types.js";
+import type { RunMetadata, RunMatchEvidence, RunResourceSummary } from "./types.js";
 
 /**
  * Redact sensitive tokens, authorization headers, passwords, and API keys.
@@ -96,6 +96,59 @@ export async function atomicWriteJson(targetPath: string, data: unknown): Promis
   const sanitized = sanitizeObject(data);
   const content = JSON.stringify(sanitized, null, 2);
   await atomicWriteFile(targetPath, content);
+}
+
+/**
+ * Canonical identity key for generated artifacts.
+ * Normalizes:
+ * - relative vs absolute path
+ * - path separators (/ vs \)
+ * - redundant . / ..
+ * - case-insensitivity on Windows (drive-letter and path casing)
+ */
+export function canonicalArtifactKey(filePath: string): string {
+  if (!filePath || typeof filePath !== "string") return "";
+  let resolved = path.resolve(filePath);
+  resolved = path.normalize(resolved);
+  if (process.platform === "win32") {
+    return resolved.toLowerCase();
+  }
+  return resolved;
+}
+
+/**
+ * Conservative heuristic to identify internal acceptance or synthetic test runs,
+ * including historical test fixtures, so they do not pollute normal user searches.
+ */
+export function isInternalRun(runData: Partial<RunMetadata>): boolean {
+  if (runData.internal_test === true || runData.run_kind === "internal_test") return true;
+  if (runData.project_key === "verity-internal") return true;
+  const taskKey = runData.task_key?.toLowerCase() || "";
+  if (
+    taskKey.startsWith("acceptance-test") ||
+    taskKey === "idempotent-acceptance-test-run" ||
+    taskKey === "reconcile-check" ||
+    taskKey.includes("acceptance") ||
+    taskKey.includes("selftest") ||
+    taskKey.includes("self-test") ||
+    taskKey.includes("audit-run") ||
+    taskKey.includes("resource-test")
+  ) {
+    return true;
+  }
+  const goal = runData.original_goal?.toLowerCase() || "";
+  if (
+    goal.includes("acceptance test") ||
+    goal.includes("fast smoke test") ||
+    goal.includes("end-to-end self-test") ||
+    goal.includes("idempotent start test") ||
+    goal.includes("pending steps guard check") ||
+    goal.includes("reconciliation normalization test") ||
+    goal.includes("cleanup debt guard test")
+  ) {
+    return true;
+  }
+  return false;
 }
 
 /**
@@ -460,22 +513,22 @@ export function generateRunSummaryMarkdown(run: RunMetadata): string {
   }
 
   lines.push(``, `## Active Resources`);
-  lines.push(`- **Browser Sessions**: ${run.browser_sessions.filter((b) => b.active).length} active`);
-  for (const b of run.browser_sessions.filter((b) => b.active)) {
+  const summary = summarizeRunResources(run);
+  lines.push(`- **Browser Sessions:** ${summary.browsers.active} active, ${summary.browsers.historical} historical`);
+  for (const b of (run.browser_sessions || []).filter((b) => b.active === true && b.status === "active")) {
     lines.push(`  - \`${b.id}\`${b.url ? ` (${b.url})` : ""}`);
   }
-  lines.push(`- **Process Sessions**: ${run.process_sessions.filter((p) => p.running).length} running`);
-  for (const p of run.process_sessions.filter((p) => p.running)) {
+  lines.push(`- **Process Sessions:** ${summary.processes.running} running, ${summary.processes.historical} historical`);
+  for (const p of (run.process_sessions || []).filter((p) => p.running === true)) {
     lines.push(`  - PID ${p.pid || "?"}: \`${p.command}\``);
   }
-  lines.push(`- **Worktrees**: ${run.worktrees.length}`);
-  for (const w of run.worktrees) {
+  lines.push(`- **Worktrees:** ${summary.worktrees.active} active, ${summary.worktrees.historical} historical`);
+  for (const w of (run.worktrees || []).filter((w) => w.cleanup_required !== false)) {
     lines.push(`  - \`${w.path}\` (${w.branch})`);
   }
 
-  const unresolvedDebt = run.cleanup_debt.filter((c) => !c.resolved);
-  lines.push(``, `## Cleanup Debt (${unresolvedDebt.length} unresolved)`);
-  if (run.cleanup_debt.length > 0) {
+  lines.push(``, `## Cleanup Debt (${summary.cleanupDebt.unresolved} unresolved)`);
+  if (run.cleanup_debt && run.cleanup_debt.length > 0) {
     for (const c of run.cleanup_debt) {
       const statusStr = c.resolved ? "RESOLVED" : "PENDING";
       lines.push(`- [${statusStr}] **${c.type}**: \`${c.path || c.resource_id}\`${c.description ? ` (${c.description})` : ""}`);
@@ -485,4 +538,67 @@ export function generateRunSummaryMarkdown(run: RunMetadata): string {
   }
 
   return lines.join("\n") + "\n";
+}
+
+/**
+ * Canonical helper for counting active, historical, and cleanup resource states.
+ * Reused identically across resume_run, get_run, diagnostics, and summary markdown.
+ */
+export function summarizeRunResources(run?: Partial<RunMetadata> | null): RunResourceSummary {
+  if (!run) {
+    return {
+      browsers: { active: 0, historical: 0, total: 0 },
+      processes: { running: 0, historical: 0, total: 0 },
+      worktrees: { active: 0, historical: 0, total: 0 },
+      artifacts: { existingTemporary: 0, historicalTemporary: 0, total: 0 },
+      cleanupDebt: { unresolved: 0, resolved: 0 },
+    };
+  }
+
+  const bList = Array.isArray(run.browser_sessions) ? run.browser_sessions : [];
+  const activeBrowsers = bList.filter((b) => b.active === true && b.status === "active").length;
+  const histBrowsers = bList.length - activeBrowsers;
+
+  const pList = Array.isArray(run.process_sessions) ? run.process_sessions : [];
+  const runningProcs = pList.filter((p) => p.running === true).length;
+  const histProcs = pList.length - runningProcs;
+
+  const wList = Array.isArray(run.worktrees) ? run.worktrees : [];
+  const activeWorktrees = wList.filter((w) => w.cleanup_required !== false).length;
+  const histWorktrees = wList.length - activeWorktrees;
+
+  const fList = Array.isArray(run.temporary_files) ? run.temporary_files : [];
+  const existingArtifacts = fList.filter((f) => f.exists !== false && !f.deleted).length;
+  const histArtifacts = fList.length - existingArtifacts;
+
+  const dList = Array.isArray(run.cleanup_debt) ? run.cleanup_debt : [];
+  const unresolvedDebt = dList.filter((c) => !c.resolved).length;
+  const resolvedDebt = dList.length - unresolvedDebt;
+
+  return {
+    browsers: {
+      active: activeBrowsers,
+      historical: histBrowsers,
+      total: bList.length,
+    },
+    processes: {
+      running: runningProcs,
+      historical: histProcs,
+      total: pList.length,
+    },
+    worktrees: {
+      active: activeWorktrees,
+      historical: histWorktrees,
+      total: wList.length,
+    },
+    artifacts: {
+      existingTemporary: existingArtifacts,
+      historicalTemporary: histArtifacts,
+      total: fList.length,
+    },
+    cleanupDebt: {
+      unresolved: unresolvedDebt,
+      resolved: resolvedDebt,
+    },
+  };
 }

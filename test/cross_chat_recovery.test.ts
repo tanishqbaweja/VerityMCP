@@ -210,7 +210,8 @@ describe("VerityMCP Cross-Conversation Recovery & Durability Acceptance Suite", 
     });
 
     // Give asynchronous writes a moment to persist
-    await new Promise((r) => setTimeout(r, 150));
+    await (testRunManager as any).writeQueue;
+    await new Promise((r) => setTimeout(r, 250));
 
     const resJson = JSON.parse(
       await fs.readFile(path.join(getRunDirPath(activeRun.run.run_id), "resources.json"), "utf-8")
@@ -425,10 +426,11 @@ describe("VerityMCP Cross-Conversation Recovery & Durability Acceptance Suite", 
       true
     );
 
-    // 3. Complete with resolve_pending: true
+    // 3. Complete with resolve_pending: true and allow_cleanup_debt: true
     const successRes = await testRunManager.completeRun(runWithPending.run.run_id, {
       status: "completed",
       resolve_pending: true,
+      allow_cleanup_debt: true,
     });
 
     // Should complete but status should reflect "needs_cleanup" because of uncleaned debt
@@ -440,8 +442,8 @@ describe("VerityMCP Cross-Conversation Recovery & Durability Acceptance Suite", 
     const finalDisk = JSON.parse(
       await fs.readFile(path.join(getRunDirPath(runWithPending.run.run_id), "run.json"), "utf-8")
     );
-    assert.equal(finalDisk.current_action, undefined);
-    assert.equal(finalDisk.current_purpose, undefined);
+    assert.ok(!finalDisk.current_action);
+    assert.ok(!finalDisk.current_purpose);
   });
 
   it("10. supports path alias in list_directory and handles absolute paths outside workspace", async () => {

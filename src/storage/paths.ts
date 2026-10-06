@@ -2,6 +2,7 @@ import fs from "node:fs";
 import fsp from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { randomUUID } from "node:crypto";
 
 let cachedServerRoot: string | null = null;
 let cachedDataRoot: string | null = null;
@@ -194,4 +195,58 @@ export function getPersistentDiskUsageBytesSync(): number {
 
   scan(root);
   return totalBytes;
+}
+
+export interface ResolvedArtifactPath {
+  requestedPath: string;
+  resolvedPath: string;
+  withinWorkspace: boolean;
+  filename: string;
+}
+
+/**
+ * Canonical helper for resolving artifact output paths across:
+ * - browser_screenshot
+ * - browser_trace_stop
+ * - browser_pdf
+ * - screenshot_desktop
+ *
+ * Rules:
+ * - If requestedPath is absolute, use it directly (withinWorkspace depends on containment).
+ * - If requestedPath is relative, resolve strictly against active workspace root.
+ * - If no path is provided, generate a unique artifact filename in active workspace root.
+ */
+export function resolveArtifactOutputPath(
+  requestedPath: string | undefined,
+  activeWorkspaceRoot?: string,
+  defaultExtension = ".png"
+): ResolvedArtifactPath {
+  const wsRoot = activeWorkspaceRoot ? path.resolve(activeWorkspaceRoot) : getServerRoot();
+  let finalPath: string;
+  let reqPath = requestedPath || "";
+
+  if (!requestedPath || requestedPath.trim() === "") {
+    const ext = defaultExtension.startsWith(".") ? defaultExtension : `.${defaultExtension}`;
+    const filename = `artifact_${Date.now()}_${randomUUID().slice(0, 8)}${ext}`;
+    reqPath = filename;
+    finalPath = path.resolve(wsRoot, filename);
+  } else if (path.isAbsolute(requestedPath)) {
+    finalPath = path.resolve(requestedPath);
+  } else {
+    finalPath = path.resolve(wsRoot, requestedPath);
+  }
+
+  const normalizedFinal = path.normalize(finalPath).toLowerCase();
+  const normalizedWs = path.normalize(wsRoot).toLowerCase();
+  const sep = path.sep.toLowerCase();
+  const withinWorkspace =
+    normalizedFinal === normalizedWs ||
+    normalizedFinal.startsWith(normalizedWs.endsWith(sep) ? normalizedWs : normalizedWs + sep);
+
+  return {
+    requestedPath: reqPath,
+    resolvedPath: finalPath,
+    withinWorkspace,
+    filename: path.basename(finalPath),
+  };
 }

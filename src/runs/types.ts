@@ -32,28 +32,43 @@ export interface CleanupDebtItem {
   path?: string;
   resource_id?: string;
   description?: string;
+  created_at?: string;
   resolved: boolean;
   resolved_at?: string;
+  resolution_reason?: string;
 }
 
 export interface TrackedTemporaryFile {
+  id?: string;
   path: string;
+  resolved_path?: string;
   tool?: string;
   purpose?: string;
   role?: "temporary_test" | "user_output" | "persistent_project_file";
+  artifact_role?: "temporary_test" | "user_output" | "persistent_project_file";
   cleanup_required: boolean;
   created_at: string;
+  deleted_at?: string;
+  exists?: boolean;
+  sha256?: string;
   deleted?: boolean;
+  browser_session_id?: string;
+  bytes?: number;
+  width?: number;
+  height?: number;
 }
 
 export interface TrackedBrowserSession {
   id: string;
   url?: string;
-  created: string;
-  status?: "active" | "closed";
+  created?: string;
+  created_at?: string;
+  updated_at?: string;
+  status?: "active" | "closed" | "lost";
   cleanup_required?: boolean;
   last_known_state?: string;
   active: boolean;
+  resolved_at?: string;
 }
 
 export interface TrackedProcessSession {
@@ -64,6 +79,7 @@ export interface TrackedProcessSession {
   running: boolean;
   cleanup_required?: boolean;
   started_at: string;
+  completed_at?: string;
   exit_code?: number | null;
 }
 
@@ -89,6 +105,10 @@ export interface RunMetadata {
   run_id: string;
   project_key?: string;
   task_key?: string;
+  internal_test?: boolean;
+  run_kind?: "user" | "internal_test";
+  acceptance_invocation_id?: string;
+  test_kind?: string;
   tags?: string[];
   search_terms?: string[];
   goal_fingerprint?: string[];
@@ -106,7 +126,9 @@ export interface RunMetadata {
   workspace: string;
   workspace_id?: string;
   server_root: string;
-  current_action?: ActivityEvent | string;
+  current_action?: ActivityEvent | string | null;
+  last_completed_action?: ActivityEvent | string | null;
+  last_failed_action?: ActivityEvent | string | null;
   current_purpose?: string;
   current_target?: any;
   completed_steps: string[];
@@ -172,6 +194,67 @@ export interface FindRunsResult {
   recommended_action: "adopt_top_match" | "ask_user_choice" | "start_new_run" | "none_found";
 }
 
+export interface RunResourceSummary {
+  browsers: {
+    active: number;
+    historical: number;
+    total: number;
+  };
+  processes: {
+    running: number;
+    historical: number;
+    total: number;
+  };
+  worktrees: {
+    active: number;
+    historical: number;
+    total: number;
+  };
+  artifacts: {
+    existingTemporary: number;
+    historicalTemporary: number;
+    total: number;
+  };
+  cleanupDebt: {
+    unresolved: number;
+    resolved: number;
+  };
+}
+
+export interface RunIndexItem {
+  run_id: string;
+  project_key?: string;
+  task_key?: string;
+  goal: string;
+  status: RunStatus;
+  workspace: string;
+  started_at: string;
+  updated_at: string;
+  server_pid?: number;
+  server_instance_id?: string;
+  is_internal: boolean;
+  run_kind?: "user" | "internal_test";
+  cleanup_debt_unresolved: number;
+  last_action?: string;
+  current_phase?: string;
+  completed_steps_count: number;
+}
+
+export interface RunIndexSummary {
+  total: number;
+  user_runs: number;
+  internal_test_runs: number;
+  internal_test_runs_running: number;
+  acceptance_run_leaks: number;
+  running_runs: number;
+  interrupted_runs: number;
+  needs_cleanup_runs: number;
+  completed_runs: number;
+  failed_runs: number;
+  abandoned_runs: number;
+  items: RunIndexItem[];
+}
+
 export interface RunResumeResult {
   recovered_run_id: string;
   status: RunStatus;
@@ -190,6 +273,7 @@ export interface RunResumeResult {
     process_sessions: TrackedProcessSession[];
     worktrees: TrackedWorktree[];
   };
+  resource_summary?: RunResourceSummary;
   modified_files: ModifiedFile[];
   temporary_artifacts: TrackedTemporaryFile[];
   cleanup_debt: CleanupDebtItem[];

@@ -2,11 +2,13 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import os from "node:os";
 import { randomUUID } from "node:crypto";
+import type { Page } from "playwright";
 import type { BrowserSession } from "./browser_manager.js";
 import { browserManager } from "./browser_manager.js";
 import { workspaceManager } from "../workspace/workspace_manager.js";
 import { activityStream } from "../observability/activity_stream.js";
-import { verifyFileExistence } from "../verification/index.js";
+import { verifyFileExistence, calculateSha256 } from "../verification/index.js";
+import { resolveArtifactOutputPath } from "../storage/paths.js";
 import type { StandardToolResponse } from "../types/index.js";
 
 function emitBrowserActionStart(
@@ -145,74 +147,161 @@ function resolveTarget(
   throw err;
 }
 
-export async function executeNavigate(
-  session: BrowserSession,
-  url: string
-): Promise<StandardToolResponse<{ url: string; title: string; status: number }>> {
-  const startTime = Date.now();
-  const page = browserManager.getActivePage(session);
-  emitBrowserActionStart(session, "browser_navigate", `Navigating to ${url}`, { url });
+export interface NavigateResult {
+  success: boolean;
+  errorCode?: string;
+  error?: string;
+  requestedUrl: string;
+  finalUrl: string;
+  title: string;
+  status: number;
+  isErrorPage: boolean;
+}
+
+/**
+ * Shared, canonical navigation and verification helper.
+ * Validates actual navigation success, detects Chromium error pages (e.g. chrome-error://chromewebdata/),
+ * correctly treats about:blank as valid when requested, and handles redirects.
+ */
+export async function navigateAndVerify(
+  page: Page,
+  url: string,
+  timeout = 30000
+): Promise<NavigateResult> {
+  const requestedUrl = url;
+  let finalUrl = requestedUrl;
+  let title = "";
+  let status = 200;
+  let isErrorPage = false;
+  let navError: Error | null = null;
 
   try {
     const response = await page.goto(url, {
       waitUntil: "domcontentloaded",
-      timeout: 30000,
+      timeout,
     });
-    const status = response ? response.status() : 200;
-    const finalUrl = page.url();
-    const title = await page.title();
+    status = response ? response.status() : 200;
+  } catch (err: any) {
+    navError = err;
+    await page.waitForLoadState("domcontentloaded", { timeout: 1000 }).catch(() => {});
+  }
 
+  try {
+    finalUrl = page.url();
+  } catch {}
+  try {
+    title = await page.title();
+  } catch {}
+
+  // Check for Chromium error page
+  if (finalUrl.startsWith("chrome-error://") || finalUrl.includes("chromewebdata")) {
+    isErrorPage = true;
+  }
+
+  const isAboutBlank = requestedUrl.trim().toLowerCase() === "about:blank";
+  if (isAboutBlank && (finalUrl === "about:blank" || !isErrorPage)) {
+    return {
+      success: true,
+      requestedUrl,
+      finalUrl: finalUrl || "about:blank",
+      title,
+      status: 200,
+      isErrorPage: false,
+    };
+  }
+
+  if (navError || isErrorPage || status >= 400) {
+    const errorMsg = navError
+      ? navError.message
+      : isErrorPage
+      ? "Navigation resulted in chrome-error page"
+      : `HTTP error status ${status}`;
+
+    return {
+      success: false,
+      errorCode: "BROWSER_NAVIGATION_FAILED",
+      error: errorMsg,
+      requestedUrl,
+      finalUrl,
+      title,
+      status,
+      isErrorPage,
+    };
+  }
+
+  return {
+    success: true,
+    requestedUrl,
+    finalUrl,
+    title,
+    status,
+    isErrorPage: false,
+  };
+}
+
+export async function executeNavigate(
+  session: BrowserSession,
+  url: string
+): Promise<StandardToolResponse<{ url: string; title: string; status: number; requested_url?: string; final_url?: string }>> {
+  const startTime = Date.now();
+  const page = browserManager.getActivePage(session);
+  emitBrowserActionStart(session, "browser_navigate", `Navigating to ${url}`, { url });
+
+  const navRes = await navigateAndVerify(page, url, 30000);
+
+  if (navRes.success) {
     emitBrowserActionComplete(
       session,
       "browser_navigate",
       "Navigation complete",
-      { url: finalUrl, title, status, generation: session.documentGeneration },
-      { url: finalUrl },
-      status < 400
+      { url: navRes.finalUrl, title: navRes.title, status: navRes.status, generation: session.documentGeneration },
+      { url: navRes.finalUrl },
+      true
     );
 
     return {
-      success: status < 400,
+      success: true,
       action: `browser_navigate "${url}"`,
-      text: `Navigated to ${finalUrl} (Title: "${title}", HTTP ${status})`,
-      summary: `Navigated to ${finalUrl} (HTTP ${status})`,
+      text: `Navigated to ${navRes.finalUrl} (Title: "${navRes.title}", HTTP ${navRes.status})`,
+      summary: `Navigated to ${navRes.finalUrl} (HTTP ${navRes.status})`,
       execution_verification: {
-        status: status < 400 ? "passed" : "failed",
+        status: "passed",
         method: "page_goto",
       },
       state_verification: {
-        status: status < 400 ? "passed" : "failed",
+        status: "passed",
         method: "http_status_and_url_verification",
-        observed_changes: [{ type: "url_navigation", after: finalUrl }],
-        details: { finalUrl, title, status },
+        observed_changes: [{ type: "url_navigation", after: navRes.finalUrl }],
+        details: { finalUrl: navRes.finalUrl, title: navRes.title, status: navRes.status },
       },
       verification: {
         performed: true,
-        passed: status < 400,
+        passed: true,
         method: "http_status_and_url_verification",
-        details: { finalUrl, title, status },
-        execution: { status: status < 400 ? "passed" : "failed", method: "page_goto" },
-        state: { status: status < 400 ? "passed" : "failed", method: "http_status_and_url_verification" },
+        details: { finalUrl: navRes.finalUrl, title: navRes.title, status: navRes.status },
+        execution: { status: "passed", method: "page_goto" },
+        state: { status: "passed", method: "http_status_and_url_verification" },
       },
-      data: { url: finalUrl, title, status },
+      data: { url: navRes.finalUrl, requested_url: navRes.requestedUrl, final_url: navRes.finalUrl, title: navRes.title, status: navRes.status },
       durationMs: Date.now() - startTime,
     };
-  } catch (err: any) {
-    emitBrowserActionFailure(session, "browser_navigate", "Navigation failed", err.message, { url });
+  } else {
+    emitBrowserActionFailure(session, "browser_navigate", "Navigation failed", navRes.error || "Navigation failed", { url });
     return {
       success: false,
-      error_code: "COMMAND_FAILED",
+      error_code: navRes.errorCode || "BROWSER_NAVIGATION_FAILED",
       action: `browser_navigate "${url}"`,
-      text: `Navigation to "${url}" failed: ${err.message}`,
-      summary: `Navigation failed: ${err.message}`,
+      text: `Navigation to "${url}" failed: ${navRes.error}\nFinal page: ${navRes.finalUrl}`,
+      summary: `Navigation failed: ${navRes.error}`,
       verification: {
         performed: true,
         passed: false,
         method: "page_goto",
-        error: err.message,
-        execution: { status: "failed", method: "page_goto", error: err.message },
-        state: { status: "not_performed" },
+        error: navRes.error,
+        execution: { status: "failed", method: "page_goto", error: navRes.error },
+        state: { status: "failed", method: "http_status_and_url_verification", details: { finalUrl: navRes.finalUrl, status: navRes.status } },
       },
+      data: { url: navRes.finalUrl, requested_url: navRes.requestedUrl, final_url: navRes.finalUrl, title: navRes.title, status: navRes.status },
       durationMs: Date.now() - startTime,
     };
   }
@@ -1128,24 +1217,55 @@ export async function executeEval(
 export async function executePdf(
   session: BrowserSession,
   outputPath?: string
-): Promise<StandardToolResponse<{ filePath: string; sizeBytes: number }>> {
+): Promise<StandardToolResponse<{
+  filePath: string;
+  resolved_path?: string;
+  requested_path?: string;
+  within_workspace?: boolean;
+  sizeBytes: number;
+  size_bytes?: number;
+  sha256?: string;
+}>> {
   const startTime = Date.now();
   const page = browserManager.getActivePage(session);
-  const targetPath = outputPath || path.join(os.tmpdir(), `verity_doc_${randomUUID().slice(0, 8)}.pdf`);
-  emitBrowserActionStart(session, "browser_pdf", "Generating page PDF", { targetPath });
+  const workspaceRoot = workspaceManager.getActiveWorkspaceRoot();
+  const { resolvedPath, requestedPath, withinWorkspace } = resolveArtifactOutputPath(outputPath, workspaceRoot, ".pdf");
+
+  emitBrowserActionStart(session, "browser_pdf", "Generating page PDF", { targetPath: resolvedPath, requestedPath });
   try {
-    await page.pdf({ path: targetPath, format: "A4" });
-    const stat = await fs.stat(targetPath);
-    emitBrowserActionComplete(session, "browser_pdf", "PDF generated and verified", { sizeBytes: stat.size, filePath: targetPath });
+    await fs.mkdir(path.dirname(resolvedPath), { recursive: true });
+    await page.pdf({ path: resolvedPath, format: "A4" });
+    const stat = await fs.stat(resolvedPath);
+    const buffer = await fs.readFile(resolvedPath);
+    const sha256 = calculateSha256(buffer);
+
+    emitBrowserActionComplete(session, "browser_pdf", "PDF generated and verified", {
+      sizeBytes: stat.size,
+      filePath: resolvedPath,
+      resolvedPath,
+      withinWorkspace,
+    });
     return {
       success: true,
       action: "browser_pdf",
-      text: `PDF document saved to ${targetPath} (${stat.size} bytes).`,
+      text: `PDF document saved to: ${resolvedPath} (${stat.size} bytes).`,
       summary: `PDF generated (${stat.size} bytes)`,
+      within_workspace: withinWorkspace,
+      workspace_root: workspaceRoot,
+      resolved_path: resolvedPath,
+      requested_path: requestedPath,
       execution_verification: { status: "passed", method: "page_pdf" },
-      state_verification: { status: "passed", method: "fs_stat_exists", details: { sizeBytes: stat.size } },
-      verification: { performed: true, passed: true, method: "fs_stat_exists", details: { sizeBytes: stat.size } },
-      data: { filePath: targetPath, sizeBytes: stat.size },
+      state_verification: { status: "passed", method: "fs_stat_exists", details: { sizeBytes: stat.size, sha256 } },
+      verification: { performed: true, passed: true, method: "fs_stat_exists", details: { sizeBytes: stat.size, sha256 } },
+      data: {
+        filePath: resolvedPath,
+        resolved_path: resolvedPath,
+        requested_path: requestedPath,
+        within_workspace: withinWorkspace,
+        sizeBytes: stat.size,
+        size_bytes: stat.size,
+        sha256,
+      },
       durationMs: Date.now() - startTime,
     };
   } catch (err: any) {
@@ -1318,10 +1438,7 @@ export async function executeTraceStop(
   }
 
   const workspaceRoot = workspaceManager.getActiveWorkspaceRoot();
-  const requestedPath = outputPath || "(auto-generated artifact)";
-  const resolvedPath = outputPath
-    ? (path.isAbsolute(outputPath) ? path.resolve(outputPath) : path.resolve(workspaceRoot, outputPath))
-    : path.join(os.tmpdir(), `verity_trace_${randomUUID().slice(0, 8)}.zip`);
+  const { resolvedPath, requestedPath, withinWorkspace } = resolveArtifactOutputPath(outputPath, workspaceRoot, ".zip");
 
   emitBrowserActionStart(session, "browser_trace_stop", "Stopping Playwright trace recording", { outputPath: requestedPath });
 

@@ -3,7 +3,14 @@
  * Standalone & Host-Native MCP App, live-updating progress and operational intent monitor.
  */
 
-export function getMonitorHtml(): string {
+export function getMonitorHtml(options?: {
+  runId?: string;
+  projectKey?: string;
+  taskKey?: string;
+}): string {
+  const initialRunId = options?.runId ? JSON.stringify(options.runId) : '""';
+  const initialProjectKey = options?.projectKey ? JSON.stringify(options.projectKey) : '""';
+  const initialTaskKey = options?.taskKey ? JSON.stringify(options.taskKey) : '""';
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -444,8 +451,16 @@ export function getMonitorHtml(): string {
 
     <div class="meta-group">
       <div class="meta-item">
+        <span>Project:</span>
+        <strong id="projectKey">${options?.projectKey || "—"}</strong>
+      </div>
+      <div class="meta-item">
         <span>Task:</span>
-        <strong id="taskKey">active</strong>
+        <strong id="taskKey">${options?.taskKey || "active"}</strong>
+      </div>
+      <div class="meta-item">
+        <span>Run:</span>
+        <strong id="runId">${options?.runId || "—"}</strong>
       </div>
       <div class="meta-item">
         <span>Elapsed:</span>
@@ -519,6 +534,19 @@ export function getMonitorHtml(): string {
       let currentActionStartTime = 0;
       let lastActivityTime = Date.now();
 
+      window.__VERITY_RUN_ID__ = ${initialRunId};
+      const boundRunId = window.__VERITY_RUN_ID__ || (function() {
+        try {
+          const params = new URLSearchParams(window.location.search);
+          return params.get('run_id') || '';
+        } catch {
+          return '';
+        }
+      })();
+      let currentRunId = boundRunId;
+      let currentProjectKey = ${initialProjectKey};
+      let currentTaskKey = ${initialTaskKey};
+
       const eventsContainer = document.getElementById('eventsContainer');
       const eventsList = document.getElementById('eventsList');
       const newEventsToast = document.getElementById('newEventsToast');
@@ -529,7 +557,9 @@ export function getMonitorHtml(): string {
       const eventsCount = document.getElementById('eventsCount');
       const warnCount = document.getElementById('warnCount');
       const failCount = document.getElementById('failCount');
+      const projectKey = document.getElementById('projectKey');
       const taskKey = document.getElementById('taskKey');
+      const runId = document.getElementById('runId');
       const currentTitle = document.getElementById('currentTitle');
       const currentWhyBox = document.getElementById('currentWhyBox');
       const currentWhyText = document.getElementById('currentWhyText');
@@ -537,6 +567,15 @@ export function getMonitorHtml(): string {
       const currentStatus = document.getElementById('currentStatus');
       const currentElapsed = document.getElementById('currentElapsed');
       const btnAutoScroll = document.getElementById('btnAutoScroll');
+      const btnPip = document.getElementById('btnPip');
+
+      // Robust Event Delegation for Event Cards - ZERO inline onclick handlers
+      eventsList.addEventListener('click', (event) => {
+        const card = event.target.closest('.event-card');
+        if (card) {
+          card.classList.toggle('expanded');
+        }
+      });
 
       // Detect Host Environment: Embedded iframe (ChatGPT / MCP App) vs Standalone localhost
       const isEmbedded = (function() {
@@ -549,6 +588,10 @@ export function getMonitorHtml(): string {
 
       if (transportBadge) {
         transportBadge.textContent = isEmbedded ? 'MCP Host Bridge' : 'Local SSE';
+      }
+
+      if (isEmbedded && statusBadge) {
+        statusBadge.textContent = 'Connected';
       }
 
       // MCP Host Bridge via JSON-RPC 2.0 postMessage
@@ -580,6 +623,12 @@ export function getMonitorHtml(): string {
       }
 
       window.addEventListener('message', (event) => {
+        try {
+          if (isEmbedded && window.parent && event.source && event.source !== window.parent) {
+            return;
+          }
+        } catch {}
+
         const data = event.data;
         if (!data || typeof data !== 'object') return;
         if (data.id && pendingRpcCalls.has(data.id)) {
@@ -587,9 +636,33 @@ export function getMonitorHtml(): string {
           pendingRpcCalls.delete(data.id);
           clearTimeout(entry.timer);
           if (data.error) {
-            entry.reject(data.error);
+            entry.reject(new Error(typeof data.error === 'object' ? data.error.message || JSON.stringify(data.error) : String(data.error)));
           } else {
             entry.resolve(data.result);
+          }
+        }
+
+        // Host bridge notification and direct message support
+        const payload = data.result || data;
+        const resData = parseStructuredMcpData(payload);
+        if (resData && (resData.events || resData.current_action !== undefined || resData.project_key)) {
+          // If this monitor is bound to a specific run, strictly ignore messages from other runs!
+          if (boundRunId && resData.run_id && resData.run_id !== boundRunId) {
+            return;
+          }
+          const runMeta = {
+            project_key: resData.project_key,
+            task_key: resData.task_key,
+            run_id: boundRunId || resData.run_id,
+          };
+          if (resData.events) {
+            handleNewEventsBatch(resData.events, resData.next_cursor, resData.current_action, runMeta);
+          } else if (resData.current_action !== undefined) {
+            updateCurrentAction(resData.current_action);
+          }
+          if (statusBadge && (statusBadge.textContent.startsWith('Bridge Err') || statusBadge.textContent === 'Waiting' || statusBadge.textContent === 'Unbound')) {
+            statusBadge.className = 'status-badge working';
+            statusBadge.textContent = 'Connected';
           }
         }
       });
@@ -616,10 +689,16 @@ export function getMonitorHtml(): string {
         return res;
       }
 
-      // Pop-out window
-      document.getElementById('btnPip').addEventListener('click', () => {
-        window.open('/monitor', 'VerityMonitor', 'width=580,height=760,menubar=no,toolbar=no,location=no');
-      });
+      // Pop-out window (Mode-aware)
+      if (btnPip) {
+        if (isEmbedded) {
+          btnPip.style.display = 'none';
+        } else {
+          btnPip.addEventListener('click', () => {
+            window.open('/monitor', 'VerityMonitor', 'width=580,height=760,menubar=no,toolbar=no,location=no');
+          });
+        }
+      }
 
       // Auto-scroll toggle
       btnAutoScroll.addEventListener('click', () => {
@@ -707,8 +786,9 @@ export function getMonitorHtml(): string {
         currentActionStartTime = new Date(action.timestamp).getTime() || Date.now();
         currentTitle.textContent = action.display_title || action.title;
         
-        if (action.purpose) {
-          currentWhyText.textContent = action.purpose;
+        const why = action.purpose || action.why;
+        if (why) {
+          currentWhyText.textContent = why;
           currentWhyBox.style.display = 'block';
         } else {
           currentWhyBox.style.display = 'none';
@@ -791,8 +871,9 @@ export function getMonitorHtml(): string {
           }
 
           let bodyHtml = '';
-          if (e.purpose) {
-            bodyHtml += '<div class="event-prop"><strong>Why:</strong> ' + escapeHtml(e.purpose) + '</div>';
+          const whyText = e.purpose || e.why;
+          if (whyText) {
+            bodyHtml += '<div class="event-prop"><strong>Why:</strong> ' + escapeHtml(whyText) + '</div>';
           }
           if (e.target) {
             const tgtStr = typeof e.target === 'object' ? JSON.stringify(e.target) : String(e.target);
@@ -806,7 +887,7 @@ export function getMonitorHtml(): string {
             bodyHtml += '<div class="event-prop"><strong>Reason:</strong> ' + escapeHtml(e.reason) + '</div>';
           }
 
-          html += '<div class="event-card" onclick="this.classList.toggle(\'expanded\')">' +
+          html += '<div class="event-card" data-event-seq="' + escapeHtml(e.seq) + '">' +
             '<div class="event-header">' +
               icon +
               '<span class="event-time">' + time + '</span>' +
@@ -836,7 +917,15 @@ export function getMonitorHtml(): string {
           .replace(/'/g, '&#039;');
       }
 
-      function handleNewEventsBatch(batch, nextCursor, currentAction) {
+      function handleNewEventsBatch(batch, nextCursor, currentAction, runMeta) {
+        if (runMeta) {
+          if (runMeta.project_key && projectKey) projectKey.textContent = runMeta.project_key;
+          if (runMeta.task_key && taskKey) taskKey.textContent = runMeta.task_key;
+          if (runMeta.run_id && runId) {
+            runId.textContent = runMeta.run_id;
+            currentRunId = runMeta.run_id;
+          }
+        }
         if (batch && batch.length > 0) {
           lastActivityTime = Date.now();
           events.push(...batch);
@@ -845,6 +934,17 @@ export function getMonitorHtml(): string {
           eventsCount.textContent = events.length + ' events';
           warnCount.textContent = events.filter(e => e.type === 'warning').length + ' warn';
           failCount.textContent = events.filter(e => e.type === 'failure').length + ' fail';
+
+          for (const ev of batch) {
+            if (ev.details && typeof ev.details === 'object') {
+              if (ev.details.project_key && projectKey && projectKey.textContent === '—') projectKey.textContent = ev.details.project_key;
+              if (ev.details.task_key && taskKey && (taskKey.textContent === '—' || taskKey.textContent === 'active')) taskKey.textContent = ev.details.task_key;
+              if (ev.details.run_id && runId && runId.textContent === '—') {
+                runId.textContent = ev.details.run_id;
+                currentRunId = ev.details.run_id;
+              }
+            }
+          }
 
           renderEvents();
         }
@@ -858,13 +958,41 @@ export function getMonitorHtml(): string {
       async function pollActivity() {
         if (isEmbedded) {
           // Use MCP Host PostMessage Tool Bridge
-          try {
-            const raw = await callMcpToolViaBridge('activity_read', { cursor: lastCursor, limit: 50 });
-            const data = parseStructuredMcpData(raw);
-            if (data && data.events) {
-              handleNewEventsBatch(data.events, data.next_cursor, data.current_action);
+          if (!boundRunId) {
+            currentTitle.textContent = 'No run bound to this monitor';
+            if (statusBadge) {
+              statusBadge.className = 'status-badge idle';
+              statusBadge.textContent = 'Unbound';
             }
-          } catch (err) {}
+            return;
+          }
+          try {
+            const raw = await callMcpToolViaBridge('run_activity_read', { run_id: boundRunId, cursor: lastCursor, limit: 50 });
+            const data = parseStructuredMcpData(raw);
+            if (data) {
+              if (data.run_id && data.run_id !== boundRunId) return;
+              const runMeta = {
+                project_key: data.project_key,
+                task_key: data.task_key,
+                run_id: boundRunId,
+              };
+              if (data.events) {
+                handleNewEventsBatch(data.events, data.next_cursor, data.current_action, runMeta);
+              } else if (data.current_action !== undefined) {
+                updateCurrentAction(data.current_action);
+              }
+              if (statusBadge && (statusBadge.textContent.startsWith('Bridge Err') || statusBadge.textContent === 'Unbound')) {
+                statusBadge.className = 'status-badge working';
+                statusBadge.textContent = 'Connected';
+              }
+            }
+          } catch (err) {
+            if (statusBadge) {
+              statusBadge.className = 'status-badge needs_cleanup';
+              statusBadge.textContent = 'Bridge Err';
+              statusBadge.title = err.message || String(err);
+            }
+          }
           return;
         }
 
@@ -873,7 +1001,12 @@ export function getMonitorHtml(): string {
           const res = await fetch('/activity/events?cursor=' + lastCursor + '&limit=100');
           if (res.ok) {
             const data = await res.json();
-            handleNewEventsBatch(data.events, data.next_cursor, data.current_action);
+            const runMeta = {
+              project_key: data.project_key,
+              task_key: data.task_key,
+              run_id: data.run_id,
+            };
+            handleNewEventsBatch(data.events, data.next_cursor, data.current_action, runMeta);
           }
         } catch (err) {}
       }

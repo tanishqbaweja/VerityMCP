@@ -363,4 +363,15 @@ describe("VerityMCP Observability & Recovery Acceptance Suite", () => {
     assert.ok(diagRes.text.includes("Persistent Data Root:"));
     assert.ok(diagRes.text.includes("Persisted Runs:"));
   });
+
+  it("11. executes full deep acceptance test suite and verifies all checks pass", async () => {
+    const accRes = await observabilityManager.runAcceptanceTest();
+    if (!accRes.data?.allPassed) {
+      console.error("FAILED CHECKS:", JSON.stringify(accRes.data?.checks.filter((c: any) => !c.passed), null, 2));
+    }
+    assert.equal(accRes.success, true, `Deep acceptance failed: ${accRes.summary}`);
+    assert.equal(accRes.data?.allPassed, true, `Some checks failed: ${JSON.stringify(accRes.data?.checks.filter((c: any) => !c.passed))}`);
+    assert.equal(accRes.data?.checksTotal >= 59, true, `Expected >= 59 checks, found ${accRes.data?.checksTotal}`);
+    assert.equal(accRes.data?.checksPassed, accRes.data?.checksTotal, `Expected all checks to pass, found ${accRes.data?.checksPassed}/${accRes.data?.checksTotal}`);
+  });
 });

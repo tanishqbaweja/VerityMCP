@@ -7,6 +7,7 @@ import {
   verifyFileRelocation,
   verifyFileContent,
 } from "../verification/index.js";
+import { processManager } from "../shell/process_manager.js";
 import type { StandardToolResponse } from "../types/index.js";
 
 export interface DeleteFileOptions {
@@ -118,26 +119,56 @@ export async function executeDeleteFile(
           durationMs: Date.now() - startTime,
         };
       }
-      await fs.rm(resolvedPath, { recursive: true, force: true });
+      await fs.rm(resolvedPath, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
     } else {
       await fs.unlink(resolvedPath);
     }
   } catch (err: any) {
+    const isBusy = err.code === "EBUSY" || err.code === "EPERM" || String(err.message).includes("EBUSY");
+    let errorCode = "COMMAND_FAILED";
+    let blockingSessions: string[] = [];
+
+    if (isBusy) {
+      const runningSessions = processManager.listSessions();
+      blockingSessions = runningSessions
+        .filter((s) => {
+          const sCwd = (s as any).cwd;
+          if (!sCwd) return false;
+          const normCwd = path.resolve(sCwd).toLowerCase();
+          const normTarget = path.resolve(resolvedPath).toLowerCase();
+          return normCwd === normTarget || normCwd.startsWith(normTarget.endsWith(path.sep) ? normTarget : normTarget + path.sep);
+        })
+        .map((s) => s.id);
+
+      if (blockingSessions.length > 0) {
+        errorCode = "WORKSPACE_IN_USE";
+      } else {
+        errorCode = "RESOURCE_BUSY";
+      }
+    }
+
+    const errorDetails = blockingSessions.length > 0 ? { blocking_sessions: blockingSessions, error: err.message } : { error: err.message };
+
     return {
       success: false,
-      error_code: "COMMAND_FAILED",
+      error_code: errorCode,
       action: `delete_file "${filePath}"`,
       display_title: `Deleting ${path.basename(filePath)}`,
       display_status: "failed",
       within_workspace: pathRes.withinWorkspace,
       workspace_root: pathRes.workspaceRoot,
       resolved_path: resolvedPath,
-      text: `Failed to delete "${filePath}": ${err.message}`,
+      text: errorCode === "WORKSPACE_IN_USE"
+        ? `Cannot delete "${filePath}": Directory is currently in use by active process session(s): ${blockingSessions.join(", ")}.`
+        : errorCode === "RESOURCE_BUSY"
+        ? `Cannot delete "${filePath}": Resource is locked or busy (EBUSY / sharing violation).`
+        : `Failed to delete "${filePath}": ${err.message}`,
       verification: {
         performed: true,
         passed: false,
         method: "fs_unlink_or_rm",
         error: err.message,
+        details: errorDetails,
       },
       durationMs: Date.now() - startTime,
     };

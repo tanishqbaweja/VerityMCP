@@ -6,6 +6,7 @@ import { browserManager, type BrowserSession } from "./browser_manager.js";
 import { workspaceManager } from "../workspace/workspace_manager.js";
 import { activityStream } from "../observability/activity_stream.js";
 import { calculateSha256 } from "../verification/index.js";
+import { resolveArtifactOutputPath } from "../storage/paths.js";
 import type { StandardToolResponse } from "../types/index.js";
 
 export interface BrowserScreenshotOptions {
@@ -27,6 +28,7 @@ export interface BrowserScreenshotData {
   height: number;
   fullPage: boolean;
   mimeType: string;
+  within_workspace?: boolean;
 }
 
 export async function executeBrowserScreenshot(
@@ -40,10 +42,7 @@ export async function executeBrowserScreenshot(
   const page = browserManager.getActivePage(session);
 
   const workspaceRoot = workspaceManager.getActiveWorkspaceRoot();
-  const requestedPath = outputPath || "(auto-generated artifact)";
-  const resolvedPath = outputPath
-    ? (path.isAbsolute(outputPath) ? path.resolve(outputPath) : path.resolve(workspaceRoot, outputPath))
-    : path.join(os.tmpdir(), `verity_screenshot_${randomUUID().slice(0, 8)}.png`);
+  const { resolvedPath, requestedPath, withinWorkspace } = resolveArtifactOutputPath(outputPath, workspaceRoot, ".png");
 
   activityStream.emit({
     type: "action_started",
@@ -220,6 +219,7 @@ export async function executeBrowserScreenshot(
     height: viewport.height,
     fullPage,
     mimeType: "image/png",
+    within_workspace: withinWorkspace,
   };
 
   const text = [

@@ -125,9 +125,11 @@ export class ProcessManager {
     cwd?: string;
     pid?: number;
     running?: boolean;
+    spawn_succeeded?: boolean;
     exit_code?: number | null;
     duration_ms?: number;
     durationMs?: number;
+    startup_duration_ms?: number;
     status: ProcessStatus;
     exitCode: number | null;
     isBackground: boolean;
@@ -237,6 +239,14 @@ export class ProcessManager {
         session.exitCode = code;
         session.status = code === 0 ? "completed" : "failed";
         session.endedAt = Date.now();
+        activityStream.emit({
+          type: "action_completed",
+          title: `Process exited (${session.id})`,
+          tool: "process_completed",
+          target: session.id,
+          process_session_id: session.id,
+          details: { status: session.status, exit_code: session.exitCode, exitCode: session.exitCode },
+        });
         resolve({ code, signal });
       });
       child.on("error", (err) => {
@@ -247,12 +257,80 @@ export class ProcessManager {
           text: `\nProcess error: ${err.message}\n`,
           timestamp: Date.now(),
         });
+        activityStream.emit({
+          type: "failure",
+          title: `Process error (${session.id})`,
+          tool: "process_completed",
+          target: session.id,
+          process_session_id: session.id,
+          details: { status: "failed", exit_code: -1, exitCode: -1, error: err.message },
+        });
         resolve({ code: -1, signal: null });
       });
     });
 
     // If explicit background execution requested
     if (runInBackground) {
+      const backgroundGraceMs = 350;
+      let graceTimer: NodeJS.Timeout | undefined;
+      const gracePromise = new Promise<"grace">((res) => {
+        graceTimer = setTimeout(() => res("grace"), backgroundGraceMs);
+      });
+
+      const outcome = await Promise.race([
+        exitPromise.then((exit) => ({ kind: "exit" as const, exit })),
+        gracePromise.then(() => ({ kind: "grace" as const })),
+      ]);
+      if (graceTimer) clearTimeout(graceTimer);
+
+      if (outcome.kind === "exit") {
+        // Process died during startup grace window!
+        const exitCode = session.exitCode !== null ? session.exitCode : (outcome.exit.code ?? -1);
+        const stdout = session.outputChunks.filter((c) => c.stream === "stdout").map((c) => c.text).join("");
+        const stderr = session.outputChunks.filter((c) => c.stream === "stderr").map((c) => c.text).join("");
+
+        activityStream.emit({
+          type: "failure",
+          title: `Background process exited immediately (${session.id})`,
+          tool: "exec_command",
+          process_session_id: session.id,
+          target: session.id,
+          details: { status: "failed", exit_code: exitCode, exitCode },
+        });
+
+        return {
+          success: false,
+          error_code: "PROCESS_EXITED_IMMEDIATELY",
+          action: `exec_command (background) "${command}"`,
+          text: `Background command exited immediately during startup grace window (PID: ${session.pid}, Exit Code: ${exitCode}).\n${stderr || stdout || "(no output)"}`,
+          summary: `Background process exited immediately with code ${exitCode}`,
+          verification: {
+            performed: true,
+            passed: false,
+            method: "background_process_startup_grace",
+            error: `Process exited immediately with code ${exitCode}`,
+            details: { sessionId: session.id, pid: session.pid, exitCode, stderr, stdout },
+          },
+          data: {
+            sessionId: session.id,
+            session_id: session.id,
+            spawn_succeeded: true,
+            running: false,
+            status: "failed",
+            exitCode,
+            exit_code: exitCode,
+            isBackground: true,
+            yielded: false,
+            nextCursor: session.outputChunks.length,
+            stdout,
+            stderr,
+            startup_duration_ms: Date.now() - startTime,
+          },
+          durationMs: Date.now() - startTime,
+        };
+      }
+
+      // Process survived the startup grace window
       return {
         success: true,
         action: `exec_command (background) "${command}"`,
@@ -265,8 +343,12 @@ export class ProcessManager {
         },
         data: {
           sessionId: session.id,
+          session_id: session.id,
+          spawn_succeeded: true,
+          running: true,
           status: "running",
           exitCode: null,
+          exit_code: null,
           isBackground: true,
           yielded: false,
           nextCursor: session.outputChunks.length,
@@ -387,7 +469,7 @@ export class ProcessManager {
         title: `Process exit ${code} (${wallTimeMs}ms)`,
         tool: "exec_command",
         process_session_id: session.id,
-        details: { exitCode: code, wallTimeMs, stderrPresent },
+        details: { exitCode: code, wallTimeMs, stderrPresent, status: success ? "completed" : "failed" },
       });
 
       return {
@@ -610,8 +692,19 @@ export class ProcessManager {
   }
 
   public async interruptProcess(
-    sessionId: string
-  ): Promise<StandardToolResponse<{ sessionId: string; pid?: number }>> {
+    sessionId: string,
+    timeoutMs = 2500
+  ): Promise<StandardToolResponse<{
+    sessionId: string;
+    pid?: number;
+    signal_requested?: string;
+    delivery_method?: string;
+    dispatch_succeeded?: boolean;
+    process_exited?: boolean;
+    exit_code?: number | null;
+    exitCode?: number | null;
+    graceful?: boolean;
+  }>> {
     const session = this.sessions.get(sessionId);
     if (!session || !session.childProcess || session.status !== "running") {
       return {
@@ -624,11 +717,19 @@ export class ProcessManager {
           passed: true,
           method: "session_status_check",
         },
-        data: { sessionId },
+        data: {
+          sessionId,
+          pid: session?.pid,
+          process_exited: true,
+          exit_code: session?.exitCode ?? 0,
+        },
       };
     }
 
     const pid = session.pid;
+    const isWin = process.platform === "win32";
+    let deliveryMethod = "stdin_ctrl_c";
+
     try {
       if (session.childProcess.stdin?.writable) {
         try {
@@ -636,29 +737,90 @@ export class ProcessManager {
         } catch {}
       }
 
-      session.childProcess.kill("SIGINT");
+      if (!isWin) {
+        session.childProcess.kill("SIGINT");
+        deliveryMethod = "sigint_signal";
+      }
 
-      setTimeout(() => {
-        if (session.status === "running") {
-          this.killProcess(sessionId).catch(() => {});
+      let exitTimer: NodeJS.Timeout | undefined;
+      const waitPromise = new Promise<boolean>((resolve) => {
+        if (session.status !== "running") {
+          return resolve(true);
         }
-      }, 1500);
+        const onExit = () => {
+          if (exitTimer) clearTimeout(exitTimer);
+          resolve(true);
+        };
+        session.childProcess?.once("close", onExit);
+        session.childProcess?.once("exit", onExit);
+        exitTimer = setTimeout(() => {
+          resolve(false);
+        }, timeoutMs);
+      });
 
-      session.status = "interrupted";
-      session.endedAt = Date.now();
+      const exited = await waitPromise;
+      if (exitTimer) clearTimeout(exitTimer);
 
+      if (exited) {
+        session.status = "interrupted";
+        session.endedAt = Date.now();
+
+        activityStream.emit({
+          type: "action_completed",
+          title: `Process interrupted gracefully (${sessionId})`,
+          tool: "interrupt_process",
+          process_session_id: sessionId,
+          target: sessionId,
+          details: { status: "interrupted", exit_code: session.exitCode, exitCode: session.exitCode },
+        });
+
+        return {
+          success: true,
+          action: `interrupt_process "${sessionId}"`,
+          text: `Dispatched interrupt (SIGINT) to process session "${sessionId}" (PID: ${pid}). Process exited gracefully with code ${session.exitCode}.`,
+          summary: `Interrupted ${sessionId} gracefully (PID: ${pid})`,
+          verification: {
+            performed: true,
+            passed: true,
+            method: "graceful_interrupt",
+            details: { pid, exitCode: session.exitCode, deliveryMethod, graceful: true },
+          },
+          data: {
+            sessionId,
+            pid,
+            signal_requested: "SIGINT",
+            delivery_method: deliveryMethod,
+            dispatch_succeeded: true,
+            process_exited: true,
+            exit_code: session.exitCode,
+            exitCode: session.exitCode,
+            graceful: true,
+          },
+        };
+      }
+
+      // Process did not exit before timeout
       return {
-        success: true,
+        success: false,
+        error_code: "INTERRUPT_TIMEOUT",
         action: `interrupt_process "${sessionId}"`,
-        text: `Dispatched interrupt (SIGINT) to process session "${sessionId}" (PID: ${pid}).`,
-        summary: `Dispatched SIGINT to ${sessionId} (PID: ${pid})`,
+        text: `Process session "${sessionId}" (PID: ${pid}) did not exit within ${timeoutMs}ms following interrupt signal. Call kill_process for forced termination.`,
+        summary: `Interrupt timed out for ${sessionId}`,
         verification: {
           performed: true,
-          passed: true,
-          method: "interrupt_signal_dispatched",
-          details: { pid },
+          passed: false,
+          method: "graceful_interrupt",
+          error: "Process did not exit before timeout",
+          details: { pid, dispatch_succeeded: true, process_exited: false },
         },
-        data: { sessionId, pid },
+        data: {
+          sessionId,
+          pid,
+          signal_requested: "SIGINT",
+          delivery_method: deliveryMethod,
+          dispatch_succeeded: true,
+          process_exited: false,
+        },
       };
     } catch (err: any) {
       return {
@@ -672,6 +834,12 @@ export class ProcessManager {
           passed: false,
           method: "interrupt_signal",
           error: err.message,
+        },
+        data: {
+          sessionId,
+          pid,
+          dispatch_succeeded: false,
+          process_exited: false,
         },
       };
     }

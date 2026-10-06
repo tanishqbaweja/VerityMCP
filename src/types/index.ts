@@ -71,6 +71,7 @@ export interface StandardToolResponse<T = unknown> {
   within_workspace?: boolean;
   workspace_root?: string;
   resolved_path?: string;
+  requested_path?: string;
   warning?: string;
   warnings?: string[];
   stderr_present?: boolean;
