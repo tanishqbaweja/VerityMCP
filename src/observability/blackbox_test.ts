@@ -5,7 +5,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import http from "node:http";
 import assert from "node:assert";
-import { execSync, spawn } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { getServerRoot } from "../storage/paths.js";
 import { workspaceManager } from "../workspace/workspace_manager.js";
 import { processManager } from "../shell/process_manager.js";
@@ -326,12 +326,12 @@ setInterval(() => {}, 1000);`,
     try {
       const repoDir = path.join(fixtureDir, `git_repo_${randSuffix}`);
       await fs.mkdir(repoDir, { recursive: true });
-      execSync(`git init -b main "${repoDir}"`, { encoding: "utf-8", windowsHide: true });
-      execSync(`git -C "${repoDir}" config user.name "VerityBlackbox"`, { encoding: "utf-8", windowsHide: true });
-      execSync(`git -C "${repoDir}" config user.email "blackbox@verity.local"`, { encoding: "utf-8", windowsHide: true });
+      execFileSync("git", ["init", "-b", "main", repoDir], { encoding: "utf-8", windowsHide: true });
+      execFileSync("git", ["-C", repoDir, "config", "user.name", "VerityBlackbox"], { encoding: "utf-8", windowsHide: true });
+      execFileSync("git", ["-C", repoDir, "config", "user.email", "blackbox@verity.local"], { encoding: "utf-8", windowsHide: true });
       await fs.writeFile(path.join(repoDir, "README.md"), "# Blackbox Git Repo\n", "utf-8");
-      execSync(`git -C "${repoDir}" add README.md`, { encoding: "utf-8", windowsHide: true });
-      execSync(`git -C "${repoDir}" commit -m "initial commit"`, { encoding: "utf-8", windowsHide: true });
+      execFileSync("git", ["-C", repoDir, "add", "README.md"], { encoding: "utf-8", windowsHide: true });
+      execFileSync("git", ["-C", repoDir, "commit", "-m", "initial commit"], { encoding: "utf-8", windowsHide: true });
 
       const prevWs = workspaceManager.getWorkspace();
       const prevDefaultId = (workspaceManager as any).defaultWorkspaceId;
