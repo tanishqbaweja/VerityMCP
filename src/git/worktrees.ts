@@ -1,6 +1,6 @@
 import path from "node:path";
 import fs from "node:fs/promises";
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { workspaceManager } from "../workspace/workspace_manager.js";
 import { executeGitStatus } from "./git_ops.js";
 import type { StandardToolResponse } from "../types/index.js";
@@ -14,7 +14,7 @@ export interface WorktreeEntry {
 export function executeListWorktrees(workspaceRoot: string): StandardToolResponse<WorktreeEntry[]> {
   const startTime = Date.now();
   try {
-    const raw = execSync("git worktree list --porcelain", {
+    const raw = execFileSync("git", ["worktree", "list", "--porcelain"], {
       cwd: workspaceRoot,
       encoding: "utf-8",
       stdio: ["ignore", "pipe", "ignore"],
@@ -83,7 +83,7 @@ export async function executeEnterWorktree(options: {
     await fs.mkdir(path.dirname(worktreePath), { recursive: true });
     const baseRef = options.baseRef || "HEAD";
 
-    execSync(`git worktree add -b "${branchName}" "${worktreePath}" "${baseRef}"`, {
+    execFileSync("git", ["worktree", "add", "-b", branchName, worktreePath, baseRef], {
       cwd: baseDir,
       stdio: "pipe",
     });
@@ -161,11 +161,13 @@ export async function executeExitWorktree(options: {
     }
 
     try {
-      const forceArg = options.force ? "--force" : "";
-      execSync(`git worktree remove ${forceArg} "${wtPath}"`.trim(), { cwd: parentRoot, stdio: "ignore" });
+      const removeArgs = ["worktree", "remove"];
+      if (options.force) removeArgs.push("--force");
+      removeArgs.push(wtPath);
+      execFileSync("git", removeArgs, { cwd: parentRoot, stdio: "ignore" });
       if (options.force) {
         try {
-          execSync(`git branch -D "${branch}"`, { cwd: parentRoot, stdio: "ignore" });
+          execFileSync("git", ["branch", "-D", "--", branch], { cwd: parentRoot, stdio: "ignore" });
         } catch {}
       }
     } catch (err: any) {
