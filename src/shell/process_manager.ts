@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { spawn, type ChildProcess, execSync } from "node:child_process";
+import { spawn, type ChildProcess, execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import type {
   ProcessSession,
@@ -868,7 +868,7 @@ export class ProcessManager {
     try {
       if (process.platform === "win32" && pid) {
         try {
-          execSync(`taskkill /pid ${pid} /T /F`, { stdio: "ignore" });
+          execFileSync("taskkill", ["/pid", String(pid), "/T", "/F"], { stdio: "ignore" });
         } catch {
           session.childProcess.kill("SIGKILL");
         }
