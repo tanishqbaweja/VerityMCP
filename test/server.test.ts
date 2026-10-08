@@ -14,6 +14,96 @@ function parseMcpPayload(text: string): any {
   return JSON.parse(text);
 }
 
+const EXPECTED_TOOL_NAMES = [
+  "open_workspace",
+  "read_file",
+  "write_file",
+  "edit_file",
+  "apply_patch",
+  "delete_file",
+  "move_file",
+  "copy_file",
+  "list_directory",
+  "locate_files",
+  "glob_files",
+  "file_metadata",
+  "search_code",
+  "get_outline",
+  "lsp_query",
+  "exec_command",
+  "read_process_output",
+  "write_stdin",
+  "interrupt_process",
+  "kill_process",
+  "browser_open",
+  "browser_close",
+  "browser_list",
+  "browser_navigate",
+  "page_reload",
+  "page_back",
+  "page_forward",
+  "browser_tab_new",
+  "browser_tab_select",
+  "browser_tab_close",
+  "browser_list_tabs",
+  "browser_snapshot",
+  "browser_click",
+  "browser_wait_for",
+  "browser_trace_start",
+  "browser_trace_stop",
+  "browser_double_click",
+  "browser_hover",
+  "browser_fill",
+  "browser_check",
+  "browser_uncheck",
+  "browser_select",
+  "browser_upload",
+  "browser_press_key",
+  "browser_eval",
+  "browser_pdf",
+  "browser_console",
+  "browser_network",
+  "browser_screenshot",
+  "screenshot_desktop",
+  "list_windows",
+  "focus_window",
+  "read_notebook",
+  "edit_notebook",
+  "git_status",
+  "git_diff",
+  "git_conflicts",
+  "show_changes",
+  "revert_changes",
+  "enter_worktree",
+  "exit_worktree",
+  "list_worktrees",
+  "task_create",
+  "task_update",
+  "task_list",
+  "activity_list",
+  "activity_read",
+  "activity_clear",
+  "activity_monitor",
+  "get_environment",
+  "list_skills",
+  "read_skill",
+  "verity_diagnostics",
+  "verity_self_test",
+  "verity_acceptance_test",
+  "start_run",
+  "checkpoint_run",
+  "resume_run",
+  "complete_run",
+  "list_runs",
+  "get_run",
+  "run_activity_read",
+  "find_runs",
+  "adopt_run",
+  "maintenance_runs",
+  "verity_blackbox_test",
+  "verity_robustness_test",
+] as const;
+
 describe("VerityMCP Server & MCP End-to-End Test", () => {
   let server: Server;
   const testPort = 7985;
@@ -125,23 +215,34 @@ describe("VerityMCP Server & MCP End-to-End Test", () => {
     const toolsJson = parseMcpPayload(toolsText);
     const tools = toolsJson.result.tools;
     assert.ok(Array.isArray(tools));
-    assert.ok(tools.length >= 25, `Expected >= 25 tools, found ${tools.length}`);
-
     const toolNames = tools.map((t: any) => t.name);
-    assert.ok(toolNames.includes("open_workspace"));
-    assert.ok(toolNames.includes("apply_patch"));
-    assert.ok(toolNames.includes("edit_file"));
-    assert.ok(toolNames.includes("write_file"));
-    assert.ok(toolNames.includes("read_file"));
-    assert.ok(toolNames.includes("browser_snapshot"));
-    assert.ok(toolNames.includes("browser_click"));
-    assert.ok(toolNames.includes("browser_fill"));
-    assert.ok(toolNames.includes("browser_screenshot"));
-    assert.ok(toolNames.includes("exec_command"));
-    assert.ok(toolNames.includes("read_process_output"));
-    assert.ok(toolNames.includes("search_code"));
-    assert.ok(toolNames.includes("get_outline"));
-    assert.ok(toolNames.includes("verity_diagnostics"));
+    assert.deepStrictEqual(
+      [...toolNames].sort(),
+      [...EXPECTED_TOOL_NAMES].sort(),
+      "tools/list must expose exactly the audited tool contract"
+    );
+
+    for (const tool of tools) {
+      assert.ok(tool.annotations, `${tool.name} must declare MCP annotations`);
+      for (const hint of ["readOnlyHint", "destructiveHint", "idempotentHint", "openWorldHint"] as const) {
+        assert.strictEqual(
+          typeof tool.annotations[hint],
+          "boolean",
+          `${tool.name}.${hint} must be an explicit boolean`
+        );
+      }
+    }
+
+    const byName = new Map(tools.map((tool: any) => [tool.name, tool]));
+    assert.deepStrictEqual(byName.get("read_file")?.annotations, {
+      readOnlyHint: true,
+      destructiveHint: false,
+      idempotentHint: true,
+      openWorldHint: false,
+    });
+    assert.strictEqual(byName.get("delete_file")?.annotations?.destructiveHint, true);
+    assert.strictEqual(byName.get("exec_command")?.annotations?.openWorldHint, true);
+    assert.strictEqual(byName.get("browser_click")?.annotations?.destructiveHint, true);
 
     // 3. Call verity_diagnostics
     const diagRes = await fetch(`${baseUrl}/mcp`, {
