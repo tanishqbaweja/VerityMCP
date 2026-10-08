@@ -1,4 +1,4 @@
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import os from "node:os";
 import { detectShells } from "../shell/shell_detector.js";
 import type { StandardToolResponse } from "../types/index.js";
@@ -23,9 +23,13 @@ export interface EnvironmentReport {
 
 let cachedEnv: EnvironmentReport | null = null;
 
-function probeTool(cmd: string): ToolVersionInfo {
+function probeTool(executable: string, args: string[]): ToolVersionInfo {
   try {
-    const out = execSync(cmd, { encoding: "utf-8", timeout: 1500, stdio: ["ignore", "pipe", "ignore"] }).trim();
+    const out = execFileSync(executable, args, {
+      encoding: "utf-8",
+      timeout: 1500,
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
     const firstLine = out.split(/\r?\n/)[0]?.slice(0, 50) || "installed";
     return { installed: true, version: firstLine };
   } catch {
@@ -48,18 +52,18 @@ export function detectEnvironment(forceRefresh = false): StandardToolResponse<En
 
   const shells = detectShells();
   const tools: Record<string, ToolVersionInfo> = {
-    node: probeTool("node -v"),
-    pnpm: probeTool("pnpm -v"),
-    npm: probeTool("npm -v"),
-    yarn: probeTool("yarn -v"),
-    bun: probeTool("bun -v"),
-    python: probeTool("python --version"),
-    uv: probeTool("uv --version"),
-    git: probeTool("git --version"),
-    gh: probeTool("gh --version"),
-    docker: probeTool("docker --version"),
-    dotnet: probeTool("dotnet --version"),
-    java: probeTool("java -version"),
+    node: probeTool("node", ["-v"]),
+    pnpm: probeTool("pnpm", ["-v"]),
+    npm: probeTool("npm", ["-v"]),
+    yarn: probeTool("yarn", ["-v"]),
+    bun: probeTool("bun", ["-v"]),
+    python: probeTool("python", ["--version"]),
+    uv: probeTool("uv", ["--version"]),
+    git: probeTool("git", ["--version"]),
+    gh: probeTool("gh", ["--version"]),
+    docker: probeTool("docker", ["--version"]),
+    dotnet: probeTool("dotnet", ["--version"]),
+    java: probeTool("java", ["-version"]),
   };
 
   const report: EnvironmentReport = {
