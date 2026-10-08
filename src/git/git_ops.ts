@@ -1,4 +1,4 @@
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import path from "node:path";
 import fs from "node:fs";
 import type { StandardToolResponse } from "../types/index.js";
@@ -21,13 +21,13 @@ export interface GitStatusInfo {
 export function executeGitStatus(workspaceRoot: string): StandardToolResponse<GitStatusInfo> {
   const startTime = Date.now();
   try {
-    const rawBranch = execSync("git branch --show-current", {
+    const rawBranch = execFileSync("git", ["branch", "--show-current"], {
       cwd: workspaceRoot,
       encoding: "utf-8",
       stdio: ["ignore", "pipe", "ignore"],
     }).trim();
 
-    const rawStatus = execSync("git status --porcelain=v1", {
+    const rawStatus = execFileSync("git", ["status", "--porcelain=v1"], {
       cwd: workspaceRoot,
       encoding: "utf-8",
       stdio: ["ignore", "pipe", "ignore"],
@@ -139,10 +139,15 @@ export function executeGitDiff(
   const startTime = Date.now();
   try {
     const target = options?.targetRef ? options.targetRef : "HEAD";
-    const files = options?.filePaths && options.filePaths.length > 0 ? `-- ${options.filePaths.join(" ")}` : "";
-    const cmd = `git diff ${target} ${files}`.trim();
+    if (target.startsWith("-")) {
+      throw new Error("Invalid target ref: refs beginning with '-' are not allowed");
+    }
+    const args = ["diff", target];
+    if (options?.filePaths && options.filePaths.length > 0) {
+      args.push("--", ...options.filePaths);
+    }
 
-    const diff = execSync(cmd, {
+    const diff = execFileSync("git", args, {
       cwd: workspaceRoot,
       encoding: "utf-8",
       stdio: ["ignore", "pipe", "ignore"],
@@ -220,16 +225,16 @@ export function executeRevertChanges(
       // Revert specific files
       for (const f of filePaths) {
         try {
-          execSync(`git checkout -- "${f}"`, { cwd: workspaceRoot, stdio: "ignore" });
+          execFileSync("git", ["checkout", "--", f], { cwd: workspaceRoot, stdio: "ignore" });
         } catch {}
         try {
-          execSync(`git clean -fd "${f}"`, { cwd: workspaceRoot, stdio: "ignore" });
+          execFileSync("git", ["clean", "-fd", "--", f], { cwd: workspaceRoot, stdio: "ignore" });
         } catch {}
       }
     } else {
       // Revert all
-      execSync("git checkout -- .", { cwd: workspaceRoot, stdio: "ignore" });
-      execSync("git clean -fd", { cwd: workspaceRoot, stdio: "ignore" });
+      execFileSync("git", ["checkout", "--", "."], { cwd: workspaceRoot, stdio: "ignore" });
+      execFileSync("git", ["clean", "-fd"], { cwd: workspaceRoot, stdio: "ignore" });
     }
 
     // MANDATORY POST-REVERT VERIFICATION
@@ -320,7 +325,7 @@ export interface GitConflictsData {
 export function executeGitConflicts(workspaceRoot: string): StandardToolResponse<GitConflictsData> {
   const startTime = Date.now();
   try {
-    const rawStatus = execSync("git status --porcelain=v1", {
+    const rawStatus = execFileSync("git", ["status", "--porcelain=v1"], {
       cwd: workspaceRoot,
       encoding: "utf-8",
       stdio: ["ignore", "pipe", "ignore"],
