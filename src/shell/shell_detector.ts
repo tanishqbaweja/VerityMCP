@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import type { DetectedShells, ShellInfo, ShellType } from "../types/index.js";
 
 let cachedShells: DetectedShells | null = null;
@@ -20,9 +20,7 @@ function probeExecutable(
   expectedSubstring?: string
 ): { success: boolean; output: string } {
   try {
-    const quoted = executable.includes(" ") ? `"${executable}"` : executable;
-    const cmd = `${quoted} ${args.join(" ")}`;
-    const output = execSync(cmd, {
+    const output = execFileSync(executable, args, {
       encoding: "utf-8",
       stdio: ["ignore", "pipe", "pipe"],
       timeout: 2500,
@@ -45,7 +43,7 @@ function findGitBashExecutable(): {
 } | null {
   const isWin = process.platform === "win32";
   if (!isWin) {
-    const probe = probeExecutable("bash", ["-c", '"printf ok"'], "ok");
+    const probe = probeExecutable("bash", ["-c", "printf ok"], "ok");
     if (probe.success) {
       const verProbe = probeExecutable("bash", ["--version"]);
       return {
@@ -83,7 +81,7 @@ function findGitBashExecutable(): {
 
   // Also query `where.exe git` to infer Git Bash location
   try {
-    const whereGit = execSync("where.exe git", {
+    const whereGit = execFileSync("where.exe", ["git"], {
       encoding: "utf-8",
       stdio: ["ignore", "pipe", "ignore"],
       timeout: 1500,
@@ -101,7 +99,7 @@ function findGitBashExecutable(): {
 
   // Also query `where.exe bash` (ignoring System32 WSL shim)
   try {
-    const whereBash = execSync("where.exe bash", {
+    const whereBash = execFileSync("where.exe", ["bash"], {
       encoding: "utf-8",
       stdio: ["ignore", "pipe", "ignore"],
       timeout: 1500,
@@ -121,7 +119,7 @@ function findGitBashExecutable(): {
     tested.add(cand.toLowerCase());
 
     if (fileExists(cand)) {
-      const probe = probeExecutable(cand, ["-c", '"printf ok"'], "ok");
+      const probe = probeExecutable(cand, ["-c", "printf ok"], "ok");
       if (probe.success) {
         const verProbe = probeExecutable(cand, ["--version"]);
         const verLine = verProbe.output.split(/\r?\n/)[0] || "Git Bash";
@@ -161,7 +159,7 @@ function probeWsl(): {
       return { available: false, functional: false, bashAvailable: false, reason: "wsl.exe not found" };
     }
 
-    const distrosOut = execSync(`${wslExe} -l -q`, {
+    const distrosOut = execFileSync(wslExe, ["-l", "-q"], {
       encoding: "utf-16le",
       stdio: ["ignore", "pipe", "ignore"],
       timeout: 1500,
@@ -176,7 +174,7 @@ function probeWsl(): {
 
     // Test if bash is actually installed and functional in the default distro
     try {
-      const bashProbe = execSync(`${wslExe} bash -c "printf ok"`, {
+      const bashProbe = execFileSync(wslExe, ["bash", "-c", "printf ok"], {
         encoding: "utf-8",
         stdio: ["ignore", "pipe", "pipe"],
         timeout: 2500,
@@ -246,12 +244,12 @@ export function detectShells(forceRefresh = false): DetectedShells {
       psDesc = "Windows PowerShell 5.1";
     }
 
-    const psProbe = probeExecutable(psExe, ["-NoProfile", "-Command", '"Write-Output ok"'], "ok");
+    const psProbe = probeExecutable(psExe, ["-NoProfile", "-Command", "Write-Output ok"], "ok");
     if (psProbe.success) {
       psAvailable = true;
       psHealthy = true;
       try {
-        const verOut = execSync(`"${psExe}" -NoProfile -Command "$PSVersionTable.PSVersion.ToString()"`, {
+        const verOut = execFileSync(psExe, ["-NoProfile", "-Command", "$PSVersionTable.PSVersion.ToString()"], {
           encoding: "utf-8",
           stdio: ["ignore", "pipe", "ignore"],
           timeout: 2000,
@@ -260,7 +258,7 @@ export function detectShells(forceRefresh = false): DetectedShells {
       } catch {}
     }
   } else {
-    const psProbe = probeExecutable("pwsh", ["-Command", '"Write-Output ok"'], "ok");
+    const psProbe = probeExecutable("pwsh", ["-Command", "Write-Output ok"], "ok");
     if (psProbe.success) {
       psExe = "pwsh";
       psAvailable = true;
