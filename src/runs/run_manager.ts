@@ -3,7 +3,7 @@ import fsp from "node:fs/promises";
 import path from "node:path";
 import readline from "node:readline";
 import os from "node:os";
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import crypto from "node:crypto";
 import {
   getServerRoot,
@@ -1378,13 +1378,13 @@ export class RunManager {
     const warnings: string[] = [];
     try {
       if (fs.existsSync(path.join(run.workspace, ".git"))) {
-        gitBranch = execSync("git branch --show-current", {
+        gitBranch = execFileSync("git", ["branch", "--show-current"], {
           cwd: run.workspace,
           encoding: "utf-8",
           stdio: ["ignore", "pipe", "ignore"],
         }).trim();
 
-        const statusOut = execSync("git status --porcelain", {
+        const statusOut = execFileSync("git", ["status", "--porcelain"], {
           cwd: run.workspace,
           encoding: "utf-8",
           stdio: ["ignore", "pipe", "ignore"],
