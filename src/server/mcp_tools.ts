@@ -80,6 +80,105 @@ import { detectEnvironment } from "../environment/env_detector.js";
 import { observabilityManager } from "../observability/diagnostics.js";
 import { runBlackboxTest } from "../observability/blackbox_test.js";
 
+type VerityToolAnnotations = {
+  readOnlyHint: boolean;
+  destructiveHint: boolean;
+  idempotentHint: boolean;
+  openWorldHint: boolean;
+};
+
+// Keep this explicit and exhaustive. Tool hosts use these hints to decide when
+// user confirmation is required, so a missing entry is treated as a startup bug.
+const TOOL_ANNOTATIONS: Record<string, VerityToolAnnotations> = {
+  open_workspace: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  read_file: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  write_file: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+  edit_file: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+  apply_patch: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+  delete_file: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+  move_file: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+  copy_file: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+  list_directory: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  locate_files: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  glob_files: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  file_metadata: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  search_code: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  get_outline: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  lsp_query: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  exec_command: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
+  read_process_output: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  write_stdin: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
+  interrupt_process: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+  kill_process: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+  browser_open: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+  browser_close: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+  browser_list: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  browser_navigate: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+  page_reload: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+  page_back: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+  page_forward: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+  browser_tab_new: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+  browser_tab_select: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  browser_tab_close: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+  browser_list_tabs: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  browser_snapshot: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  browser_click: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
+  browser_wait_for: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  browser_trace_start: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+  browser_trace_stop: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+  browser_double_click: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
+  browser_hover: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+  browser_fill: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+  browser_check: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  browser_uncheck: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  browser_select: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  browser_upload: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
+  browser_press_key: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
+  browser_eval: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
+  browser_pdf: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
+  browser_console: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  browser_network: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  browser_screenshot: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
+  screenshot_desktop: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+  list_windows: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  focus_window: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  read_notebook: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  edit_notebook: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+  git_status: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  git_diff: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  git_conflicts: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  show_changes: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  revert_changes: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+  enter_worktree: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  exit_worktree: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+  list_worktrees: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  task_create: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+  task_update: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+  task_list: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  activity_list: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  activity_read: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  activity_clear: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+  activity_monitor: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  get_environment: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  list_skills: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  read_skill: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  verity_diagnostics: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  verity_self_test: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+  verity_acceptance_test: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+  start_run: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+  checkpoint_run: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+  resume_run: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  complete_run: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+  list_runs: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  get_run: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  run_activity_read: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  find_runs: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  adopt_run: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  maintenance_runs: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+  verity_blackbox_test: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+  verity_robustness_test: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+};
+
 export function createVerityMcpServer(config: VerityConfig): McpServer {
   const server = new McpServer(
     {
@@ -411,6 +510,10 @@ DURABLE EXECUTION & RECOVERY INSTRUCTIONS:
     shape: Record<string, z.ZodTypeAny> | z.ZodTypeAny,
     handler: (args: any) => Promise<McpToolResponse>
   ) => {
+    const annotations = TOOL_ANNOTATIONS[name];
+    if (!annotations) {
+      throw new Error(`Missing explicit MCP tool annotations for "${name}"`);
+    }
     const purposeField = z.string().optional().describe("Concise operational reason why this action is being performed right now (for user live activity stream).");
     const expectedOutcomeField = z.string().optional().describe("What system state or result is expected if this action succeeds.");
 
@@ -430,7 +533,7 @@ DURABLE EXECUTION & RECOVERY INSTRUCTIONS:
       });
     }
 
-    server.registerTool(name, { description, inputSchema } as any, async (args: any): Promise<any> => {
+    server.registerTool(name, { description, inputSchema, annotations } as any, async (args: any): Promise<any> => {
       const startTime = Date.now();
       const callId = activityStream.generateCallId();
       const callerPurpose = typeof args?.purpose === "string" && args.purpose.trim() ? args.purpose.trim() : undefined;
