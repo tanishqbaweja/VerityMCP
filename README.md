@@ -5,7 +5,7 @@
 [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-orange.svg)](https://nodejs.org)
 [![Tools](https://img.shields.io/badge/Tools-65%20Verified%20Tools-purple.svg)](#complete-65-tool-reference)
 [![License](https://img.shields.io/badge/License-MIT-brightgreen.svg)](LICENSE)
-[![M8ven Score](https://m8ven.ai/badge/mcp/tanishqbaweja-veritymcp-j1l1jm?v=74f68bc8d119abad5454e31601d6b1d7)](https://m8ven.ai/mcp/tanishqbaweja-veritymcp-j1l1jm?s=readme)
+[![M8ven Score](https://m8ven.ai/badge/mcp/tanishqbaweja-veritymcp-j1l1jm)](https://m8ven.ai/mcp/tanishqbaweja-veritymcp-j1l1jm?s=readme)
 
 > **Connect ChatGPT Web Chat directly to your local computer.**  
 > Execute terminal commands, edit local files, automate Playwright browsers, inspect desktop windows, and run tests—backed by an ironclad **Verification Engine** that guarantees ChatGPT never hallucinates a successful action.
