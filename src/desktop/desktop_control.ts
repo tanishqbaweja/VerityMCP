@@ -3,7 +3,7 @@ import * as nodeFs from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { randomUUID } from "node:crypto";
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { workspaceManager } from "../workspace/workspace_manager.js";
 import { activityStream } from "../observability/activity_stream.js";
 import { calculateSha256, verifyFileExistence } from "../verification/index.js";
@@ -119,7 +119,7 @@ try {
 
     try {
       await fs.writeFile(scriptFile, psScript, "utf-8");
-      execSync(`powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${scriptFile}"`, {
+      execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", scriptFile], {
         stdio: "ignore",
         timeout: 10000,
       });
@@ -143,10 +143,17 @@ try {
   } else {
     // Unix fallback
     try {
-      execSync(`screencapture -x "${resolvedPath}" || import -window root "${resolvedPath}"`, {
-        stdio: "ignore",
-        timeout: 10000,
-      });
+      try {
+        execFileSync("screencapture", ["-x", resolvedPath], {
+          stdio: "ignore",
+          timeout: 10000,
+        });
+      } catch {
+        execFileSync("import", ["-window", "root", resolvedPath], {
+          stdio: "ignore",
+          timeout: 10000,
+        });
+      }
     } catch (err: any) {
       return {
         toolResponse: {
@@ -365,7 +372,7 @@ public class WindowEnum {
   const scriptPath = path.join(os.tmpdir(), `verity_win_enum_${randomUUID().slice(0, 8)}.ps1`);
   try {
     nodeFs.writeFileSync(scriptPath, psScript, "utf-8");
-    const raw = execSync(`powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${scriptPath}"`, {
+    const raw = execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", scriptPath], {
       encoding: "utf-8",
       timeout: 10000,
       windowsHide: true,
@@ -768,7 +775,7 @@ $res = [WinFocuser]::Focus($targetHwnd)
 `;
 
     nodeFs.writeFileSync(scriptPath, script, "utf-8");
-    const raw = execSync(`powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "${scriptPath}"`, {
+    const raw = execFileSync("powershell.exe", ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", scriptPath], {
       encoding: "utf-8",
       timeout: 8000,
       windowsHide: false,
