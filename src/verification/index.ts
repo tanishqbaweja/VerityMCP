@@ -91,6 +91,68 @@ export async function verifyFileContent(
 }
 
 /**
+ * Verifies an exact byte-for-byte file copy. Unlike verifyFileContent, this never
+ * decodes bytes as text or normalizes line endings.
+ */
+export async function verifyFileBytes(
+  filePath: string,
+  expectedBytes: Buffer
+): Promise<VerificationResult> {
+  try {
+    const actualBytes = await fs.readFile(filePath);
+    const actualHash = calculateSha256(actualBytes);
+    const expectedHash = calculateSha256(expectedBytes);
+    const passed = actualBytes.length === expectedBytes.length && actualBytes.equals(expectedBytes);
+
+    if (passed) {
+      return {
+        performed: true,
+        passed: true,
+        method: "readback_sha256_bytes",
+        details: {
+          filePath,
+          bytes: actualBytes.length,
+          hash: actualHash,
+        },
+        execution: { status: "passed", method: "fs_mutation" },
+        state: {
+          status: "passed",
+          method: "sha256_byte_readback",
+          details: { bytes: actualBytes.length, hash: actualHash },
+        },
+      };
+    }
+
+    const error = `File byte mismatch: expected ${expectedBytes.length} bytes (hash: ${expectedHash.slice(0, 10)}...), found ${actualBytes.length} bytes (hash: ${actualHash.slice(0, 10)}...)`;
+    return {
+      performed: true,
+      passed: false,
+      method: "readback_sha256_bytes",
+      error,
+      details: {
+        filePath,
+        expectedBytes: expectedBytes.length,
+        actualBytes: actualBytes.length,
+        expectedHash,
+        actualHash,
+      },
+      execution: { status: "passed", method: "fs_mutation" },
+      state: { status: "failed", method: "sha256_byte_readback", error },
+    };
+  } catch (err: any) {
+    return {
+      performed: true,
+      passed: false,
+      method: "readback_sha256_bytes",
+      error: `Readback failed: ${err.message}`,
+      details: { filePath },
+      execution: { status: "failed", method: "fs_mutation", error: err.message },
+      state: { status: "failed", method: "sha256_byte_readback", error: err.message },
+    };
+  }
+}
+
+/**
  * Verifies that a file either exists or does not exist on disk.
  */
 export async function verifyFileExistence(

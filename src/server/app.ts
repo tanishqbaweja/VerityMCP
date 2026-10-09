@@ -1,6 +1,15 @@
 import express, { type Express, type Request, type Response } from "express";
-import { createMcpHandler } from "@modelcontextprotocol/server";
-import { toNodeHandler } from "@modelcontextprotocol/node";
+import { randomUUID } from "node:crypto";
+import {
+  createMcpHandler,
+  isInitializeRequest,
+  isLegacyRequest,
+} from "@modelcontextprotocol/server";
+import {
+  NodeStreamableHTTPServerTransport,
+  toNodeHandler,
+  toWebRequest,
+} from "@modelcontextprotocol/node";
 import type { VerityConfig } from "../types/index.js";
 import { OAuthProvider } from "../auth/oauth_provider.js";
 import { createVerityMcpServer } from "./mcp_tools.js";
@@ -14,6 +23,13 @@ export interface VerityAppInstance {
   config: VerityConfig;
   oauthProvider: OAuthProvider;
   resolveBaseUrl: (req?: Request) => string;
+}
+
+interface LegacyMcpSession {
+  transport: NodeStreamableHTTPServerTransport;
+  server: ReturnType<typeof createVerityMcpServer>;
+  openResponses: number;
+  lastActive: number;
 }
 
 export function createVerityApp(config: VerityConfig): VerityAppInstance {
@@ -37,11 +53,11 @@ export function createVerityApp(config: VerityConfig): VerityAppInstance {
     res.setHeader("Access-Control-Allow-Origin", "*");
     res.setHeader(
       "Access-Control-Allow-Headers",
-      "Authorization, Content-Type, Accept, mcp-session-id, x-requested-with"
+      "Authorization, Content-Type, Accept, mcp-session-id, MCP-Protocol-Version, x-requested-with"
     );
     res.setHeader(
       "Access-Control-Expose-Headers",
-      "Authorization, WWW-Authenticate, Content-Type"
+      "Authorization, WWW-Authenticate, Content-Type, mcp-session-id"
     );
     res.setHeader("Access-Control-Allow-Methods", "GET, POST, OPTIONS, PUT, DELETE");
     if (req.method === "OPTIONS") {
@@ -135,16 +151,115 @@ export function createVerityApp(config: VerityConfig): VerityAppInstance {
   const jsonParser = express.json({ limit: "50mb" });
   const urlEncodedParser = express.urlencoded({ extended: true, limit: "50mb" });
 
-  // Stateless MCP handler for ChatGPT Web
-  const mcpHandler = createMcpHandler(
-    () => createVerityMcpServer(config),
+  // Modern (2026-07-28 envelope) MCP traffic remains per-request.
+  // Legacy/2025 ChatGPT traffic is handled by a stateful Streamable HTTP
+  // transport below so the server issues a real mcp-session-id.
+  const modernMcpHandler = createMcpHandler(
+    (ctx) => {
+      const requestSessionId =
+        ctx.requestInfo?.headers.get("mcp-session-id")?.trim() || undefined;
+      return createVerityMcpServer(config, requestSessionId);
+    },
     {
-      legacy: "stateless",
-      onerror: (err) => console.error("[VerityMCP] MCP Handler error:", err),
+      legacy: "reject",
+      onerror: (err) => console.error("[VerityMCP] Modern MCP handler error:", err),
     }
   );
 
-  const mcpNodeHandler = toNodeHandler(mcpHandler);
+  const modernNodeHandler = toNodeHandler(modernMcpHandler);
+  const legacySessions = new Map<string, LegacyMcpSession>();
+  const LEGACY_SESSION_IDLE_MS = 30 * 60_000;
+  const MAX_LEGACY_SESSIONS = 1000;
+
+  const readSessionHeader = (req: Request): string | undefined => {
+    const raw = req.headers["mcp-session-id"];
+    if (Array.isArray(raw)) return raw[0]?.trim() || undefined;
+    return typeof raw === "string" && raw.trim() ? raw.trim() : undefined;
+  };
+
+  const trackLegacyResponse = (session: LegacyMcpSession, res: Response) => {
+    if (!res.socket || res.destroyed) return;
+    session.openResponses++;
+    res.once("close", () => {
+      session.openResponses = Math.max(0, session.openResponses - 1);
+      session.lastActive = Date.now();
+    });
+  };
+
+  const legacySessionSweep = setInterval(() => {
+    const cutoff = Date.now() - LEGACY_SESSION_IDLE_MS;
+    for (const session of legacySessions.values()) {
+      if (session.openResponses === 0 && session.lastActive < cutoff) {
+        session.transport.close().catch((err) =>
+          console.error("[VerityMCP] Failed closing idle MCP session:", err)
+        );
+      }
+    }
+  }, 60_000);
+  legacySessionSweep.unref();
+
+  const handleLegacyMcpRequest = async (req: Request, res: Response) => {
+    const sessionId = readSessionHeader(req);
+    const existing = sessionId ? legacySessions.get(sessionId) : undefined;
+
+    if (existing) {
+      existing.lastActive = Date.now();
+      trackLegacyResponse(existing, res);
+      await existing.transport.handleRequest(req, res, req.body);
+      return;
+    }
+
+    if (!sessionId && req.method === "POST" && isInitializeRequest(req.body)) {
+      if (legacySessions.size >= MAX_LEGACY_SESSIONS) {
+        res.status(503).json({
+          jsonrpc: "2.0",
+          error: { code: -32000, message: "Too many open MCP sessions" },
+          id: null,
+        });
+        return;
+      }
+
+      let transport!: NodeStreamableHTTPServerTransport;
+      const server = createVerityMcpServer(config);
+      transport = new NodeStreamableHTTPServerTransport({
+        sessionIdGenerator: () => randomUUID(),
+        onsessioninitialized: (newSessionId) => {
+          legacySessions.set(newSessionId, {
+            transport,
+            server,
+            openResponses: 0,
+            lastActive: Date.now(),
+          });
+        },
+      });
+
+      transport.onerror = (err) =>
+        console.error("[VerityMCP] Stateful MCP transport error:", err);
+      transport.onclose = () => {
+        const closedSessionId = transport.sessionId;
+        if (closedSessionId) legacySessions.delete(closedSessionId);
+      };
+
+      await server.connect(transport);
+      await transport.handleRequest(req, res, req.body);
+      return;
+    }
+
+    if (sessionId) {
+      res.status(404).json({
+        jsonrpc: "2.0",
+        error: { code: -32001, message: "MCP session not found" },
+        id: null,
+      });
+      return;
+    }
+
+    res.status(400).json({
+      jsonrpc: "2.0",
+      error: { code: -32000, message: "Bad Request: No valid MCP session ID provided" },
+      id: null,
+    });
+  };
 
   const handleMcpRequest = async (req: Request, res: Response) => {
     let accept = (req.headers.accept as string) || "";
@@ -165,7 +280,13 @@ export function createVerityApp(config: VerityConfig): VerityAppInstance {
     }
 
     try {
-      await mcpNodeHandler(req, res, req.body);
+      const probe = await toWebRequest(req, req.body);
+      const legacy = await isLegacyRequest(probe, req.body);
+      if (legacy) {
+        await handleLegacyMcpRequest(req, res);
+      } else {
+        await modernNodeHandler(req, res, req.body);
+      }
     } catch (err: any) {
       console.error("[VerityMCP] Error handling request:", err);
       if (!res.headersSent) {

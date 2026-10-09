@@ -781,7 +781,6 @@ $res = [WinFocuser]::Focus($targetHwnd)
       windowsHide: false,
     }).trim();
 
-    console.log("RAW FOCUS OUTPUT:", raw);
     let parsed: any = {};
     if (raw) {
       try {

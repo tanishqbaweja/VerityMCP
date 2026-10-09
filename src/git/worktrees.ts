@@ -1,7 +1,7 @@
 import path from "node:path";
 import fs from "node:fs/promises";
 import { execFileSync } from "node:child_process";
-import { workspaceManager } from "../workspace/workspace_manager.js";
+import { workspaceManager, type WorkspaceManager } from "../workspace/workspace_manager.js";
 import { executeGitStatus } from "./git_ops.js";
 import type { StandardToolResponse } from "../types/index.js";
 
@@ -59,12 +59,15 @@ export function executeListWorktrees(workspaceRoot: string): StandardToolRespons
   }
 }
 
-export async function executeEnterWorktree(options: {
-  name?: string;
-  baseRef?: string;
-}): Promise<StandardToolResponse<{ worktreePath: string; branch: string }>> {
+export async function executeEnterWorktree(
+  options: {
+    name?: string;
+    baseRef?: string;
+  },
+  manager: WorkspaceManager = workspaceManager
+): Promise<StandardToolResponse<{ worktreePath: string; branch: string }>> {
   const startTime = Date.now();
-  const ws = workspaceManager.getWorkspace();
+  const ws = manager.getWorkspace();
   if (!ws) {
     return {
       success: false,
@@ -121,12 +124,15 @@ export async function executeEnterWorktree(options: {
   }
 }
 
-export async function executeExitWorktree(options: {
-  action: "keep" | "remove";
-  force?: boolean;
-}): Promise<StandardToolResponse<{ action: string; originalRoot: string }>> {
+export async function executeExitWorktree(
+  options: {
+    action: "keep" | "remove";
+    force?: boolean;
+  },
+  manager: WorkspaceManager = workspaceManager
+): Promise<StandardToolResponse<{ action: string; originalRoot: string }>> {
   const startTime = Date.now();
-  const ws = workspaceManager.getWorkspace();
+  const ws = manager.getWorkspace();
   if (!ws || !ws.worktree || !ws.sourceRoot) {
     return {
       success: false,

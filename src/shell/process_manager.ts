@@ -13,6 +13,16 @@ import type {
 import { activityStream } from "../observability/activity_stream.js";
 import { resolveShellCommand, detectShells } from "./shell_detector.js";
 import { formatOutputWithBudget } from "./token_budget.js";
+import {
+  ensureWindowsPrivateConsoleHost,
+  encodeWindowsProcessPayload,
+  sendWindowsPrivateConsoleCtrlC,
+} from "./windows_console.js";
+import {
+  ensureGitBashPtyHelper,
+  encodeGitBashPtyPayload,
+  extractGitBashPtyControl,
+} from "./git_bash_pty_helper.js";
 
 export interface ExecVerifyOptions {
   path_exists?: string;
@@ -38,6 +48,14 @@ export interface OutputChunk {
   timestamp: number;
 }
 
+function sanitizePtyOutput(data: string): string {
+  return data
+    .replace(/\x1B\][^\x07]*(?:\x07|\x1B\\)/g, "")
+    .replace(/\x1B\[[0-?]*[ -/]*[@-~]/g, "")
+    .replace(/\r\n/g, "\n")
+    .replace(/\r/g, "\n");
+}
+
 export interface InternalProcessSession {
   id: string;
   command: string;
@@ -50,9 +68,14 @@ export interface InternalProcessSession {
   endedAt?: number;
   exitCode: number | null;
   childProcess?: ChildProcess;
+  completionPromise?: Promise<void>;
   outputChunks: OutputChunk[];
   stdoutBytes: number;
   stderrBytes: number;
+  expectedExitCode: number;
+  windowsPrivateConsole: boolean;
+  terminalTransport: "pipes" | "pty-helper";
+  terminationRequested?: "interrupt" | "kill";
 }
 
 export interface ProcessOutputResult {
@@ -90,6 +113,9 @@ export class ProcessManager {
       outputChunks: [],
       stdoutBytes: 0,
       stderrBytes: 0,
+      expectedExitCode: 0,
+      windowsPrivateConsole: false,
+      terminalTransport: "pipes",
     };
 
     this.sessions.set(id, session);
@@ -168,6 +194,7 @@ export class ProcessManager {
     }
 
     const session = this.createSession(command, cwd, requestedShell);
+    session.expectedExitCode = options.verify?.exit_code ?? 0;
     let finalCommand = command;
     if (session.shell === "powershell") {
       finalCommand = `[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; $OutputEncoding = [System.Text.Encoding]::UTF8; ${command}`;
@@ -182,18 +209,49 @@ export class ProcessManager {
       process_session_id: session.id,
     });
 
-    let child: ChildProcess;
+    let child: ChildProcess | undefined;
+    let helperControlStderr = "";
+    const processEnv = {
+      ...process.env,
+      TERM: "xterm-256color",
+      CI: "true",
+      FORCE_COLOR: "0",
+    };
+
     try {
-      child = spawn(shellResolved.shell, fullArgs, {
-        cwd,
-        windowsHide: true,
-        env: {
-          ...process.env,
-          TERM: "xterm-256color",
-          CI: "true",
-          FORCE_COLOR: "0",
-        },
-      });
+      const useWindowsGitBashPty = process.platform === "win32" && session.shell === "git-bash";
+      if (useWindowsGitBashPty) {
+        const helper = ensureGitBashPtyHelper();
+        child = spawn(process.execPath, [
+          helper.helperPath,
+          encodeGitBashPtyPayload(shellResolved.shell, cwd, fullArgs),
+        ], {
+          cwd,
+          windowsHide: true,
+          env: {
+            ...processEnv,
+            DEVSPACE_NODE_PTY_ENTRY: helper.nodePtyEntry,
+          },
+        });
+        session.terminalTransport = "pty-helper";
+      } else {
+        let spawnExecutable = shellResolved.shell;
+        let spawnArgs = fullArgs;
+        if (process.platform === "win32") {
+          const hostPath = ensureWindowsPrivateConsoleHost();
+          spawnExecutable = hostPath;
+          spawnArgs = [encodeWindowsProcessPayload(shellResolved.shell, cwd, fullArgs)];
+          session.windowsPrivateConsole = true;
+        }
+
+        child = spawn(spawnExecutable, spawnArgs, {
+          cwd,
+          windowsHide: true,
+          env: processEnv,
+        });
+      }
+      session.childProcess = child;
+      session.pid = child.pid;
     } catch (err: any) {
       session.status = "failed";
       session.endedAt = Date.now();
@@ -211,112 +269,318 @@ export class ProcessManager {
       };
     }
 
-    session.childProcess = child;
-    session.pid = child.pid;
-
-    child.stdout?.on("data", (chunk: Buffer) => {
-      const text = chunk.toString("utf-8");
-      session.stdoutBytes += chunk.length;
-      session.outputChunks.push({
-        stream: "stdout",
-        text,
-        timestamp: Date.now(),
-      });
+    type ExitResult = { code: number | null; signal: NodeJS.Signals | number | null };
+    let resolveExit!: (value: ExitResult) => void;
+    let exitSettled = false;
+    const exitPromise = new Promise<ExitResult>((resolve) => {
+      resolveExit = resolve;
     });
+    session.completionPromise = exitPromise.then(() => undefined);
 
-    child.stderr?.on("data", (chunk: Buffer) => {
-      const text = chunk.toString("utf-8");
-      session.stderrBytes += chunk.length;
-      session.outputChunks.push({
-        stream: "stderr",
-        text,
-        timestamp: Date.now(),
-      });
+    type StartupActivity = { stream: "stdout" | "stderr"; text: string };
+    let resolveStartupActivity!: (activity: StartupActivity) => void;
+    let startupActivitySettled = false;
+    const startupActivityPromise = new Promise<StartupActivity>((resolve) => {
+      resolveStartupActivity = resolve;
     });
+    const noteStartupActivity = (activity: StartupActivity) => {
+      if (startupActivitySettled) return;
+      startupActivitySettled = true;
+      resolveStartupActivity(activity);
+    };
 
-    const exitPromise = new Promise<{ code: number | null; signal: NodeJS.Signals | null }>((resolve) => {
-      child.on("close", (code, signal) => {
-        session.exitCode = code;
-        session.status = code === 0 ? "completed" : "failed";
-        session.endedAt = Date.now();
-        activityStream.emit({
-          type: "action_completed",
-          title: `Process exited (${session.id})`,
-          tool: "process_completed",
-          target: session.id,
-          process_session_id: session.id,
-          details: { status: session.status, exit_code: session.exitCode, exitCode: session.exitCode },
+    const finalizeExit = (code: number | null, signal: NodeJS.Signals | number | null) => {
+      if (exitSettled) return;
+      exitSettled = true;
+      session.exitCode = code;
+      session.status = session.terminationRequested
+        ? "interrupted"
+        : code === session.expectedExitCode
+        ? "completed"
+        : "failed";
+      session.endedAt = Date.now();
+      activityStream.emit({
+        type: session.status === "failed" ? "failure" : "action_completed",
+        title: `Process exited (${session.id})`,
+        tool: "process_completed",
+        target: session.id,
+        process_session_id: session.id,
+        details: {
+          status: session.status,
+          exit_code: session.exitCode,
+          exitCode: session.exitCode,
+          expectedExitCode: session.expectedExitCode,
+          transport: session.terminalTransport,
+          terminationRequested: session.terminationRequested,
+        },
+      });
+      resolveExit({ code, signal });
+
+      if (child) {
+        setImmediate(() => {
+          try { child?.stdin?.destroy(); } catch {}
+          try { child?.stdout?.destroy(); } catch {}
+          try { child?.stderr?.destroy(); } catch {}
+          if (session.childProcess === child) session.childProcess = undefined;
         });
-        resolve({ code, signal });
+      }
+    };
+
+    if (child) {
+      child.stdout?.on("data", (chunk: Buffer) => {
+        const raw = chunk.toString("utf-8");
+        const text = session.terminalTransport === "pty-helper"
+          ? sanitizePtyOutput(raw)
+          : raw;
+        if (!text) return;
+        noteStartupActivity({ stream: "stdout", text });
+        session.stdoutBytes += Buffer.byteLength(text, "utf8");
+        session.outputChunks.push({
+          stream: "stdout",
+          text,
+          timestamp: Date.now(),
+        });
+      });
+
+      child.stderr?.on("data", (chunk: Buffer) => {
+        const text = chunk.toString("utf-8");
+        if (session.terminalTransport === "pty-helper") {
+          helperControlStderr += text;
+        } else {
+          noteStartupActivity({ stream: "stderr", text });
+          session.stderrBytes += chunk.length;
+          session.outputChunks.push({
+            stream: "stderr",
+            text,
+            timestamp: Date.now(),
+          });
+        }
+      });
+
+      child.on("close", (code, signal) => {
+        let finalCode = code;
+        if (session.terminalTransport === "pty-helper") {
+          const control = extractGitBashPtyControl(helperControlStderr);
+          if (control.stderr) {
+            session.stderrBytes += Buffer.byteLength(control.stderr, "utf8");
+            session.outputChunks.push({
+              stream: "stderr",
+              text: control.stderr,
+              timestamp: Date.now(),
+            });
+          }
+          if (control.exitCode !== undefined) {
+            finalCode = control.exitCode;
+          }
+        }
+        finalizeExit(finalCode, signal);
       });
       child.on("error", (err) => {
-        session.status = "failed";
-        session.endedAt = Date.now();
         session.outputChunks.push({
           stream: "stderr",
           text: `\nProcess error: ${err.message}\n`,
           timestamp: Date.now(),
         });
-        activityStream.emit({
-          type: "failure",
-          title: `Process error (${session.id})`,
-          tool: "process_completed",
-          target: session.id,
-          process_session_id: session.id,
-          details: { status: "failed", exit_code: -1, exitCode: -1, error: err.message },
-        });
-        resolve({ code: -1, signal: null });
+        finalizeExit(-1, null);
       });
+    }
+
+    const startupExitPromise = new Promise<ExitResult>((resolve) => {
+      if (!child || child.exitCode !== null || child.signalCode !== null) {
+        resolve({
+          code: child?.exitCode ?? session.exitCode,
+          signal: (child?.signalCode as NodeJS.Signals | null | undefined) ?? null,
+        });
+        return;
+      }
+      child.once("exit", (code, signal) => resolve({ code, signal }));
     });
 
-    // If explicit background execution requested
+    // If explicit background execution requested, observe startup rather than relying on a
+    // single short sleep. Chatty commands can be accepted as soon as they actually emit
+    // output; silent PowerShell commands get a longer bounded window because powershell.exe
+    // startup time can vary materially under load.
     if (runInBackground) {
-      const backgroundGraceMs = 350;
+      const backgroundGraceMs = session.terminalTransport === "pty-helper"
+        ? 2000
+        : session.shell === "powershell"
+        ? 2500
+        : 1000;
       let graceTimer: NodeJS.Timeout | undefined;
       const gracePromise = new Promise<"grace">((res) => {
         graceTimer = setTimeout(() => res("grace"), backgroundGraceMs);
       });
 
-      const outcome = await Promise.race([
-        exitPromise.then((exit) => ({ kind: "exit" as const, exit })),
+      let outcome = await Promise.race([
+        startupExitPromise.then((exit) => ({ kind: "exit" as const, exit })),
+        startupActivityPromise.then((activity) => ({ kind: "activity" as const, activity })),
         gracePromise.then(() => ({ kind: "grace" as const })),
       ]);
       if (graceTimer) clearTimeout(graceTimer);
 
+      if (outcome.kind === "activity") {
+        const fatalPowerShellStartup =
+          session.shell === "powershell" &&
+          outcome.activity.stream === "stderr" &&
+          /CommandNotFoundException|is not recognized as the name of a cmdlet|ParserError|At line:\d+ char:\d+/i.test(
+            outcome.activity.text
+          );
+        const fatalGitBashStartup =
+          session.terminalTransport === "pty-helper" &&
+          /(?:^|\s)(?:bash:\s*)?.*command not found|syntax error near unexpected token|unexpected EOF while looking for matching/i.test(
+            outcome.activity.text
+          );
+        const fatalCmdStartup =
+          session.shell === "cmd" &&
+          /is not recognized as an internal or external command|The syntax of the command is incorrect/i.test(
+            outcome.activity.text
+          );
+        const fatalShellStartup =
+          fatalPowerShellStartup || fatalGitBashStartup || fatalCmdStartup;
+
+        // Activity means the shell has started executing the requested command. Give the
+        // process a short settlement interval so an immediate post-output exit is still
+        // classified synchronously. Known PowerShell startup errors get a longer drain
+        // interval because they are definitively fatal even if the wrapper has not closed yet.
+        const settleMs = fatalShellStartup
+          ? 1500
+          : session.terminalTransport === "pty-helper"
+          ? 600
+          : 300;
+        const settled = await Promise.race([
+          startupExitPromise.then((exit) => ({ kind: "exit" as const, exit })),
+          new Promise<{ kind: "running" }>((resolve) =>
+            setTimeout(() => resolve({ kind: "running" }), settleMs)
+          ),
+        ]);
+
+        if (settled.kind === "exit") {
+          outcome = settled;
+        } else if (fatalShellStartup) {
+          // Shell-level CommandNotFound/ParserError/syntax failures cannot become a
+          // healthy long-running command.
+          // Wait for the wrapper to close if it is already in teardown, then return the
+          // observed non-zero state. Do not report a healthy background session.
+          await Promise.race([
+            exitPromise,
+            new Promise((resolve) => setTimeout(resolve, 500)),
+          ]);
+          const exitCode = session.exitCode ?? -1;
+          const stdout = session.outputChunks.filter((c) => c.stream === "stdout").map((c) => c.text).join("");
+          const stderr = session.outputChunks.filter((c) => c.stream === "stderr").map((c) => c.text).join("");
+          return {
+            success: false,
+            error_code: "PROCESS_EXITED_IMMEDIATELY",
+            action: `exec_command (background) "${command}"`,
+            text: `Background command failed during PowerShell startup (PID: ${session.pid}, Exit Code: ${exitCode}).\n${stderr || stdout || outcome.activity.text}`,
+            summary: `Background process failed during startup with code ${exitCode}`,
+            verification: {
+              performed: true,
+              passed: false,
+              method: "background_process_startup_activity",
+              error: `${session.shell} reported a fatal command startup error`,
+              details: {
+                sessionId: session.id,
+                pid: session.pid,
+                exitCode,
+                expectedExitCode: session.expectedExitCode,
+                stderr,
+                stdout,
+              },
+            },
+            data: {
+              sessionId: session.id,
+              session_id: session.id,
+              spawn_succeeded: true,
+              running: session.status === "running",
+              status: session.status,
+              exitCode,
+              exit_code: exitCode,
+              isBackground: true,
+              yielded: false,
+              nextCursor: session.outputChunks.length,
+              stdout,
+              stderr,
+              startup_duration_ms: Date.now() - startTime,
+            },
+            durationMs: Date.now() - startTime,
+          };
+        } else {
+          // Non-fatal output proves the command reached execution and remains alive.
+          return {
+            success: true,
+            action: `exec_command (background) "${command}"`,
+            text: `Command launched in background (Session ID: ${session.id}, PID: ${session.pid}, Shell: ${session.shell}). Use read_process_output to monitor stdout/stderr.`,
+            verification: {
+              performed: true,
+              passed: true,
+              method: "process_startup_activity_verification",
+              details: {
+                sessionId: session.id,
+                pid: session.pid,
+                shell: session.shell,
+                firstStream: outcome.activity.stream,
+              },
+            },
+            data: {
+              sessionId: session.id,
+              session_id: session.id,
+              spawn_succeeded: true,
+              running: true,
+              status: session.status,
+              exitCode: null,
+              exit_code: null,
+              isBackground: true,
+              yielded: false,
+              nextCursor: session.outputChunks.length,
+            },
+            durationMs: Date.now() - startTime,
+          };
+        }
+      }
+
       if (outcome.kind === "exit") {
-        // Process died during startup grace window!
+        // Drain the close event/output briefly so the immediate-exit response contains final stderr/stdout.
+        await Promise.race([exitPromise, new Promise((resolve) => setTimeout(resolve, 150))]);
         const exitCode = session.exitCode !== null ? session.exitCode : (outcome.exit.code ?? -1);
         const stdout = session.outputChunks.filter((c) => c.stream === "stdout").map((c) => c.text).join("");
         const stderr = session.outputChunks.filter((c) => c.stream === "stderr").map((c) => c.text).join("");
+        const expected = exitCode === session.expectedExitCode;
 
         activityStream.emit({
-          type: "failure",
-          title: `Background process exited immediately (${session.id})`,
+          type: expected ? "action_completed" : "failure",
+          title: expected
+            ? `Background process completed during startup (${session.id})`
+            : `Background process exited immediately (${session.id})`,
           tool: "exec_command",
           process_session_id: session.id,
           target: session.id,
-          details: { status: "failed", exit_code: exitCode, exitCode },
+          details: { status: session.status, exit_code: exitCode, exitCode, expectedExitCode: session.expectedExitCode },
         });
 
         return {
-          success: false,
-          error_code: "PROCESS_EXITED_IMMEDIATELY",
+          success: expected,
+          error_code: expected ? undefined : "PROCESS_EXITED_IMMEDIATELY",
           action: `exec_command (background) "${command}"`,
-          text: `Background command exited immediately during startup grace window (PID: ${session.pid}, Exit Code: ${exitCode}).\n${stderr || stdout || "(no output)"}`,
-          summary: `Background process exited immediately with code ${exitCode}`,
+          text: expected
+            ? `Background command completed during startup with expected exit code ${exitCode}.\n${stdout || stderr || "(no output)"}`
+            : `Background command exited immediately during startup grace window (PID: ${session.pid}, Exit Code: ${exitCode}).\n${stderr || stdout || "(no output)"}`,
+          summary: expected
+            ? `Background process completed with expected code ${exitCode}`
+            : `Background process exited immediately with code ${exitCode}`,
           verification: {
             performed: true,
-            passed: false,
+            passed: expected,
             method: "background_process_startup_grace",
-            error: `Process exited immediately with code ${exitCode}`,
-            details: { sessionId: session.id, pid: session.pid, exitCode, stderr, stdout },
+            error: expected ? undefined : `Process exited immediately with code ${exitCode}`,
+            details: { sessionId: session.id, pid: session.pid, exitCode, expectedExitCode: session.expectedExitCode, stderr, stdout },
           },
           data: {
             sessionId: session.id,
             session_id: session.id,
             spawn_succeeded: true,
             running: false,
-            status: "failed",
+            status: session.status,
             exitCode,
             exit_code: exitCode,
             isBackground: true,
@@ -376,7 +640,7 @@ export class ProcessManager {
 
     if (outcome.type === "exit") {
       const code = session.exitCode;
-      const success = code === 0;
+      const exitMatched = code === session.expectedExitCode;
       const stdoutRaw = session.outputChunks
         .filter((c) => c.stream === "stdout")
         .map((c) => c.text)
@@ -459,17 +723,25 @@ export class ProcessManager {
       }
 
       const execVerif: ExecutionVerification = {
-        status: success ? "passed" : "failed",
+        status: exitMatched ? "passed" : "failed",
         method: "process_exit_code_check",
-        details: { exitCode: code, wallTimeMs },
+        details: { exitCode: code, expectedExitCode: session.expectedExitCode, wallTimeMs },
       };
+      const success = exitMatched && stateVerif.status !== "failed";
 
       activityStream.emit({
         type: success ? "action_completed" : "failure",
         title: `Process exit ${code} (${wallTimeMs}ms)`,
         tool: "exec_command",
         process_session_id: session.id,
-        details: { exitCode: code, wallTimeMs, stderrPresent, status: success ? "completed" : "failed" },
+        details: {
+          exitCode: code,
+          expectedExitCode: session.expectedExitCode,
+          wallTimeMs,
+          stderrPresent,
+          status: success ? "completed" : "failed",
+          postconditions: stateVerif.status,
+        },
       });
 
       return {
@@ -639,7 +911,11 @@ export class ProcessManager {
     input: string
   ): Promise<StandardToolResponse<{ sessionId: string; bytesWritten: number }>> {
     const session = this.sessions.get(sessionId);
-    if (!session || !session.childProcess || session.status !== "running") {
+    if (
+      !session ||
+      !session.childProcess ||
+      session.status !== "running"
+    ) {
       return {
         success: false,
         error_code: "PROCESS_NOT_FOUND",
@@ -656,8 +932,16 @@ export class ProcessManager {
     }
 
     try {
-      const formattedInput = input.endsWith("\n") ? input : `${input}\n`;
-      session.childProcess.stdin?.write(formattedInput);
+      const isPtyHelper = session.terminalTransport === "pty-helper";
+      const formattedInput = isPtyHelper
+        ? (/[\r\n]$/.test(input) ? input : `${input}\r`)
+            .replace(/\r\n/g, "\r")
+            .replace(/\n/g, "\r")
+        : (input.endsWith("\n") ? input : `${input}\n`);
+      session.childProcess?.stdin?.write(formattedInput);
+      const deliveryMethod = isPtyHelper
+        ? "pty_helper_write"
+        : "stream_write";
       return {
         success: true,
         action: `write_stdin "${sessionId}"`,
@@ -666,8 +950,11 @@ export class ProcessManager {
         verification: {
           performed: true,
           passed: true,
-          method: "stream_write",
-          details: { bytesWritten: Buffer.byteLength(formattedInput) },
+          method: deliveryMethod,
+          details: {
+            bytesWritten: Buffer.byteLength(formattedInput),
+            transport: session.terminalTransport,
+          },
         },
         data: {
           sessionId,
@@ -706,7 +993,11 @@ export class ProcessManager {
     graceful?: boolean;
   }>> {
     const session = this.sessions.get(sessionId);
-    if (!session || !session.childProcess || session.status !== "running") {
+    if (
+      !session ||
+      !session.childProcess ||
+      session.status !== "running"
+    ) {
       return {
         success: true,
         action: `interrupt_process "${sessionId}"`,
@@ -728,38 +1019,40 @@ export class ProcessManager {
 
     const pid = session.pid;
     const isWin = process.platform === "win32";
-    let deliveryMethod = "stdin_ctrl_c";
+    const child = session.childProcess;
+    let deliveryMethod = "sigint_signal";
 
     try {
-      if (session.childProcess.stdin?.writable) {
-        try {
-          session.childProcess.stdin.write("\x03");
-        } catch {}
-      }
-
-      if (!isWin) {
-        session.childProcess.kill("SIGINT");
-        deliveryMethod = "sigint_signal";
-      }
-
-      let exitTimer: NodeJS.Timeout | undefined;
-      const waitPromise = new Promise<boolean>((resolve) => {
-        if (session.status !== "running") {
-          return resolve(true);
+      session.terminationRequested = "interrupt";
+      if (session.terminalTransport === "pty-helper") {
+        if (!child?.stdin?.writable) {
+          throw new Error("PTY helper stdin is unavailable for Ctrl-C delivery.");
         }
-        const onExit = () => {
-          if (exitTimer) clearTimeout(exitTimer);
-          resolve(true);
-        };
-        session.childProcess?.once("close", onExit);
-        session.childProcess?.once("exit", onExit);
-        exitTimer = setTimeout(() => {
-          resolve(false);
-        }, timeoutMs);
-      });
+        child.stdin.write("\x03");
+        deliveryMethod = isWin ? "windows_pty_ctrl_c" : "pty_ctrl_c";
+      } else if (isWin) {
+        if (!pid || !session.windowsPrivateConsole) {
+          throw new Error("Windows process does not own a private console for graceful Ctrl-C delivery.");
+        }
+        const dispatch = sendWindowsPrivateConsoleCtrlC(pid);
+        if (!dispatch.success) {
+          throw new Error(dispatch.error || "GenerateConsoleCtrlEvent failed");
+        }
+        deliveryMethod = "windows_private_console_ctrl_c";
+      } else {
+        if (!child) throw new Error("Process transport is unavailable for SIGINT dispatch.");
+        const dispatched = child.kill("SIGINT");
+        if (!dispatched) throw new Error("SIGINT dispatch returned false");
+      }
 
-      const exited = await waitPromise;
-      if (exitTimer) clearTimeout(exitTimer);
+      const completion = session.completionPromise;
+      if (!completion) {
+        throw new Error("Process completion tracker is unavailable.");
+      }
+      const exited = await Promise.race([
+        completion.then(() => true),
+        new Promise<boolean>((resolve) => setTimeout(() => resolve(false), timeoutMs)),
+      ]);
 
       if (exited) {
         session.status = "interrupted";
@@ -823,6 +1116,9 @@ export class ProcessManager {
         },
       };
     } catch (err: any) {
+      if (session.status === "running" && session.terminationRequested === "interrupt") {
+        session.terminationRequested = undefined;
+      }
       return {
         success: false,
         error_code: "COMMAND_FAILED",
@@ -849,7 +1145,11 @@ export class ProcessManager {
     sessionId: string
   ): Promise<StandardToolResponse<{ sessionId: string; pid?: number }>> {
     const session = this.sessions.get(sessionId);
-    if (!session || !session.childProcess || session.status !== "running") {
+    if (
+      !session ||
+      !session.childProcess ||
+      session.status !== "running"
+    ) {
       return {
         success: true,
         action: `kill_process "${sessionId}"`,
@@ -866,16 +1166,23 @@ export class ProcessManager {
 
     const pid = session.pid;
     try {
+      session.terminationRequested = "kill";
       if (process.platform === "win32" && pid) {
         try {
           execFileSync("taskkill", ["/pid", String(pid), "/T", "/F"], { stdio: "ignore" });
         } catch {
-          session.childProcess.kill("SIGKILL");
+          session.childProcess?.kill("SIGKILL");
         }
       } else {
-        session.childProcess.kill("SIGKILL");
+        session.childProcess?.kill("SIGKILL");
       }
 
+      if (session.completionPromise) {
+        await Promise.race([
+          session.completionPromise,
+          new Promise<void>((resolve) => setTimeout(resolve, 1000)),
+        ]);
+      }
       session.status = "interrupted";
       session.endedAt = Date.now();
 
@@ -893,6 +1200,9 @@ export class ProcessManager {
         data: { sessionId, pid },
       };
     } catch (err: any) {
+      if (session.status === "running" && session.terminationRequested === "kill") {
+        session.terminationRequested = undefined;
+      }
       return {
         success: false,
         error_code: "COMMAND_FAILED",

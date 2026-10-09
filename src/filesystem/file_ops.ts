@@ -6,6 +6,7 @@ import {
   verifyFileExistence,
   verifyFileRelocation,
   verifyFileContent,
+  verifyFileBytes,
 } from "../verification/index.js";
 import { processManager } from "../shell/process_manager.js";
 import type { StandardToolResponse } from "../types/index.js";
@@ -440,9 +441,9 @@ export async function executeCopyFile(
     target: { source: resolvedSource, destination: resolvedDest },
   });
 
-  let srcContent: string;
+  let srcContent: Buffer;
   try {
-    srcContent = await fs.readFile(resolvedSource, "utf-8");
+    srcContent = await fs.readFile(resolvedSource);
   } catch (err: any) {
     return {
       success: false,
@@ -492,8 +493,8 @@ export async function executeCopyFile(
     };
   }
 
-  // MANDATORY POST-COPY VERIFICATION
-  const verification = await verifyFileContent(resolvedDest, srcContent);
+  // MANDATORY POST-COPY VERIFICATION (raw bytes; never decode binary data as text)
+  const verification = await verifyFileBytes(resolvedDest, srcContent);
 
   if (!verification.passed) {
     return {
@@ -511,7 +512,7 @@ export async function executeCopyFile(
     };
   }
 
-  const bytesCopied = Buffer.byteLength(srcContent, "utf-8");
+  const bytesCopied = srcContent.length;
 
   activityStream.emit({
     type: "action_completed",

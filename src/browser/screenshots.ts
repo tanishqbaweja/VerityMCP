@@ -13,6 +13,7 @@ export interface BrowserScreenshotOptions {
   session: BrowserSession;
   outputPath?: string;
   fullPage?: boolean;
+  workspaceRoot?: string;
 }
 
 export interface BrowserScreenshotData {
@@ -38,10 +39,10 @@ export async function executeBrowserScreenshot(
   imagePayload: { data: string; mimeType: string };
 }> {
   const startTime = Date.now();
-  const { session, outputPath, fullPage = false } = options;
+  const { session, outputPath, fullPage = false, workspaceRoot: workspaceRootOverride } = options;
   const page = browserManager.getActivePage(session);
 
-  const workspaceRoot = workspaceManager.getActiveWorkspaceRoot();
+  const workspaceRoot = workspaceRootOverride || workspaceManager.getActiveWorkspaceRoot();
   const { resolvedPath, requestedPath, withinWorkspace } = resolveArtifactOutputPath(outputPath, workspaceRoot, ".png");
 
   activityStream.emit({

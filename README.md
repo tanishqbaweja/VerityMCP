@@ -122,7 +122,22 @@ flowchart TD
 
 ---
 
-## 🛠️ Complete 65-Tool Reference
+## ⚡ Fast Agent Profile
+
+VerityMCP defaults to a **fast** tool profile. Common filesystem, shell, browser, Git, diagnostics, and durable-run tools are exposed directly so the model has a much smaller tool menu to reason over before its first action.
+
+- Specialist capabilities are not removed. Use `discover_tools` to find them and `invoke_tool` to execute them on demand.
+- Use `task_bootstrap` at the start of repository work when you need workspace, fresh Git status, optional relevant-code matches, managed processes, and recent activity together.
+- Set `VERITY_TOOL_PROFILE=full` to restore direct exposure of the complete legacy tool surface.
+- Tool calls default to compact response metadata to avoid repeating large structured payloads in model context. Pass `response_detail: "full"` on an individual call, or set `VERITY_RESPONSE_DETAIL=full`, when complete structured diagnostics are needed.
+- Verification remains enabled in both profiles; the optimization reduces schema/context overhead rather than skipping state checks.
+- For interactive ChatGPT agent work with VerityMCP, prefer **GPT-5.6 Sol** over GPT-6 Sol unless GPT-6 Sol is specifically required.
+
+Agents are instructed to make an early safe inspection/action call for clear tasks instead of spending a long planning phase before touching the machine.
+
+---
+
+## 🛠️ Complete Tool Reference
 
 VerityMCP exposes a unified, production-ready tool surface organized across 12 engineering domains:
 
