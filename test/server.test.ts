@@ -199,6 +199,17 @@ describe("VerityMCP Server & MCP End-to-End Test", () => {
     const initJson = parseMcpPayload(initText);
     assert.strictEqual(initJson.result.serverInfo.name, "verity-mcp");
     assert.strictEqual(initJson.result.serverInfo.version, "1.0.0");
+    assert.match(initJson.result.instructions, /RUNTIME ENVIRONMENT:/);
+    assert.match(initJson.result.instructions, /OS:/);
+    assert.match(initJson.result.instructions, /Default shell:/);
+    assert.match(initJson.result.instructions, /Available shells:/);
+    assert.match(initJson.result.instructions, /Path style:/);
+    assert.match(initJson.result.instructions, /SHELL RULE:/);
+    if (process.platform === "win32") {
+      assert.match(initJson.result.instructions, /Windows \(win32,/);
+      assert.match(initJson.result.instructions, /Windows drive-letter\/backslash paths/);
+      assert.match(initJson.result.instructions, /Do not assume Linux\/macOS commands in PowerShell or cmd/);
+    }
 
     // 2. Tools list
     const toolsRes = await fetch(`${baseUrl}/mcp`, {
