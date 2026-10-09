@@ -23,6 +23,7 @@ import { executeSearchCode } from "../discovery/search_code.js";
 import { executeGetOutline } from "../discovery/get_outline.js";
 import { executeLsp } from "../discovery/lsp_tool.js";
 import { processManager } from "../shell/process_manager.js";
+import { getCachedShells } from "../shell/shell_detector.js";
 import { browserManager } from "../browser/browser_manager.js";
 import { takeBrowserSnapshot } from "../browser/snapshot.js";
 import {
@@ -182,6 +183,42 @@ const TOOL_ANNOTATIONS: Record<string, VerityToolAnnotations> = {
   invoke_tool: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
 };
 
+function buildRuntimeEnvironmentInstructions(): string {
+  const shells = getCachedShells();
+  const platformLabel =
+    process.platform === "win32"
+      ? "Windows"
+      : process.platform === "darwin"
+      ? "macOS"
+      : process.platform === "linux"
+      ? "Linux"
+      : process.platform;
+  const defaultShellLabel = shells
+    ? shells.defaultShell === "bash" && process.platform === "win32"
+      ? "Git Bash"
+      : shells.defaultShell
+    : process.platform === "win32"
+    ? "auto (Git Bash when available, otherwise PowerShell)"
+    : "bash";
+  const availableShells = shells
+    ? [
+        shells.powershell.available ? "PowerShell" : null,
+        shells.cmd.available ? "cmd" : null,
+        shells.gitBash.available ? (process.platform === "win32" ? "Git Bash" : "Bash") : null,
+        shells.wsl.available ? "WSL" : null,
+      ].filter((value): value is string => Boolean(value))
+    : [];
+  const availableShellsText =
+    availableShells.length > 0 ? availableShells.join(", ") : "not yet probed; choose exec_command shell explicitly if needed";
+  const pathStyle = process.platform === "win32" ? "Windows drive-letter/backslash paths" : "POSIX paths";
+  const shellRule =
+    process.platform === "win32"
+      ? "Use syntax appropriate to the selected shell. Do not assume Linux/macOS commands in PowerShell or cmd; use POSIX shell syntax only when using Git Bash/WSL explicitly."
+      : "Use syntax appropriate to the selected shell and operating system.";
+
+  return `RUNTIME ENVIRONMENT:\n- OS: ${platformLabel} (${process.platform}, ${process.arch})\n- Default shell: ${defaultShellLabel}\n- Available shells: ${availableShellsText}\n- Path style: ${pathStyle}\n\nSHELL RULE:\n${shellRule}`;
+}
+
 export function createVerityMcpServer(
   config: VerityConfig,
   defaultClientSessionId?: string
@@ -193,6 +230,8 @@ export function createVerityMcpServer(
     },
     {
       instructions: `You are connected to VerityMCP on the user's local machine.
+
+${buildRuntimeEnvironmentInstructions()}
 
 VerityMCP Core Philosophy:
 AN AGENT MUST BE ABLE TO TRUST ITS TOOLS.

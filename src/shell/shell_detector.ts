@@ -5,6 +5,11 @@ import type { DetectedShells, ShellInfo, ShellType } from "../types/index.js";
 
 let cachedShells: DetectedShells | null = null;
 
+/** Returns previously detected shell capabilities without triggering any probes. */
+export function getCachedShells(): DetectedShells | null {
+  return cachedShells;
+}
+
 function fileExists(filePath?: string): boolean {
   if (!filePath) return false;
   try {
