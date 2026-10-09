@@ -62,6 +62,14 @@ export async function main() {
 
   const instance = createVerityApp(config);
   const shells = detectShells();
+  const defaultShellInfo =
+    shells.defaultShell === "powershell"
+      ? shells.powershell
+      : shells.defaultShell === "cmd"
+      ? shells.cmd
+      : shells.defaultShell === "wsl"
+      ? shells.wsl
+      : shells.gitBash;
 
   const server = createServer(instance.app);
 
@@ -77,7 +85,7 @@ Host:           ${config.host}
 Endpoint (MCP): ${mcpUrl}
 ${config.publicBaseUrl ? `Public Tunnel:  ${config.publicBaseUrl}` : ""}
 Health Check:   http://${config.host}:${config.port}/healthz
-Default Shell:  ${shells.defaultShell} (${shells.powershell.available ? "PowerShell" : "cmd"})
+Default Shell:  ${shells.defaultShell} (${defaultShellInfo.description})
 Git Bash:       ${shells.gitBash.available ? shells.gitBash.description : "Not detected"}
 Active Root:    ${workspaceManager.getActiveWorkspaceRoot()}
 Auth Token:     ${config.ownerToken ? "(Configured via ~/.verity/auth.json)" : "(None - public access)"}

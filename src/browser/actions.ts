@@ -158,6 +158,37 @@ export interface NavigateResult {
   isErrorPage: boolean;
 }
 
+async function stabilizeFailedNavigation(page: Page): Promise<void> {
+  // Chromium can schedule chrome-error://chromewebdata/ after page.goto has already rejected.
+  // Stop any in-flight loader first, then require a short period of URL stability before
+  // returning the failed navigation to callers. This prevents an immediate recovery goto
+  // from being interrupted by Chromium's delayed internal error-page navigation.
+  try {
+    const cdp = await page.context().newCDPSession(page);
+    try {
+      await cdp.send("Page.stopLoading");
+    } finally {
+      await cdp.detach().catch(() => {});
+    }
+  } catch {}
+
+  const deadline = Date.now() + 500;
+  let previousUrl = "";
+  try { previousUrl = page.url(); } catch {}
+  let stableSince = Date.now();
+  while (Date.now() < deadline) {
+    await page.waitForTimeout(25);
+    let currentUrl = previousUrl;
+    try { currentUrl = page.url(); } catch {}
+    if (currentUrl !== previousUrl) {
+      previousUrl = currentUrl;
+      stableSince = Date.now();
+    }
+    if (Date.now() - stableSince >= 175 && Date.now() + 100 >= deadline) break;
+  }
+  await page.waitForLoadState("domcontentloaded", { timeout: 250 }).catch(() => {});
+}
+
 /**
  * Shared, canonical navigation and verification helper.
  * Validates actual navigation success, detects Chromium error pages (e.g. chrome-error://chromewebdata/),
@@ -183,7 +214,7 @@ export async function navigateAndVerify(
     status = response ? response.status() : 200;
   } catch (err: any) {
     navError = err;
-    await page.waitForLoadState("domcontentloaded", { timeout: 1000 }).catch(() => {});
+    await stabilizeFailedNavigation(page);
   }
 
   try {
@@ -1216,7 +1247,8 @@ export async function executeEval(
 
 export async function executePdf(
   session: BrowserSession,
-  outputPath?: string
+  outputPath?: string,
+  workspaceRootOverride?: string
 ): Promise<StandardToolResponse<{
   filePath: string;
   resolved_path?: string;
@@ -1228,7 +1260,7 @@ export async function executePdf(
 }>> {
   const startTime = Date.now();
   const page = browserManager.getActivePage(session);
-  const workspaceRoot = workspaceManager.getActiveWorkspaceRoot();
+  const workspaceRoot = workspaceRootOverride || workspaceManager.getActiveWorkspaceRoot();
   const { resolvedPath, requestedPath, withinWorkspace } = resolveArtifactOutputPath(outputPath, workspaceRoot, ".pdf");
 
   emitBrowserActionStart(session, "browser_pdf", "Generating page PDF", { targetPath: resolvedPath, requestedPath });

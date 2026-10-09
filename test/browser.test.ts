@@ -1,6 +1,7 @@
 import { describe, it, after } from "node:test";
 import assert from "node:assert";
 import fs from "node:fs/promises";
+import http from "node:http";
 import { browserManager } from "../src/browser/browser_manager.js";
 import { takeBrowserSnapshot } from "../src/browser/snapshot.js";
 import {
@@ -119,6 +120,50 @@ describe("VerityMCP First-Class Browser Automation Engine", () => {
     assert.ok(stat2.size > 0);
     await fs.unlink(shot2.toolResponse.data?.resolvedPath!).catch(() => {});
     await fs.rm("test-results", { recursive: true, force: true }).catch(() => {});
+  });
+
+  it("recovers on the same browser session immediately after a failed initial navigation", async () => {
+    const reserve = http.createServer((_req, res) => res.end("reserve"));
+    await new Promise<void>((resolve) => reserve.listen(0, "127.0.0.1", () => resolve()));
+    const address = reserve.address();
+    assert.ok(address && typeof address === "object");
+    const port = address.port;
+    await new Promise<void>((resolve, reject) =>
+      reserve.close((err) => (err ? reject(err) : resolve()))
+    );
+
+    const session = await browserManager.getSession("failed-nav-recovery");
+    const url = `http://127.0.0.1:${port}/`;
+
+    const failed = await executeNavigate(session, url);
+    assert.strictEqual(failed.success, false);
+    assert.strictEqual(failed.error_code, "BROWSER_NAVIGATION_FAILED");
+
+    const server = http.createServer((_req, res) => {
+      res.writeHead(200, { "content-type": "text/html" });
+      res.end("<!doctype html><title>Recovered</title><h1 id='ok'>RECOVERED_OK</h1>");
+    });
+
+    try {
+      await new Promise<void>((resolve, reject) => {
+        server.once("error", reject);
+        server.listen(port, "127.0.0.1", () => {
+          server.removeListener("error", reject);
+          resolve();
+        });
+      });
+
+      const recovered = await executeNavigate(session, url);
+      assert.strictEqual(recovered.success, true, recovered.text);
+      assert.strictEqual(recovered.data?.title, "Recovered");
+      assert.ok(recovered.data?.url.includes(String(port)));
+      const page = browserManager.getActivePage(session);
+      const body = await page.textContent("body");
+      assert.ok(body?.includes("RECOVERED_OK"));
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await browserManager.closeSession("failed-nav-recovery");
+    }
   });
 });
 

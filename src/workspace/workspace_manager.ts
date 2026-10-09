@@ -128,20 +128,27 @@ export class WorkspaceManager {
       lines.push(`\nInstruction Context Loaded:\n${instructions.slice(0, 500)}...`);
     }
 
+    // A workspace switch is not complete until the previous workspace's disposables are
+    // finished and its manager entry is gone. Do this before announcing the new workspace
+    // as active so callers can safely delete/move the old root immediately after return.
+    if (prevWorkspaceId && prevWorkspaceId !== id) {
+      await this.deactivateWorkspace(prevWorkspaceId);
+      this.activeWorkspaces.delete(prevWorkspaceId);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+    }
+    this.defaultWorkspaceId = id;
+
     activityStream.emit({
       type: "action_completed",
       title: `Workspace active: ${path.basename(root)}`,
-      purpose: "Workspace initialized and ready for execution",
+      purpose: "Workspace initialized and previous workspace teardown completed",
       tool: "open_workspace",
       workspace_id: id,
       target: { root },
+      evidence: prevWorkspaceId && prevWorkspaceId !== id
+        ? { previous_workspace_released: prevWorkspaceId }
+        : undefined,
     });
-
-    // Deactivate previous workspace if switching roots
-    if (prevWorkspaceId && prevWorkspaceId !== id) {
-      await this.deactivateWorkspace(prevWorkspaceId);
-    }
-    this.defaultWorkspaceId = id;
 
     return {
       success: true,

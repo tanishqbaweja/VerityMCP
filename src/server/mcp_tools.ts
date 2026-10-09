@@ -91,6 +91,7 @@ type VerityToolAnnotations = {
 // user confirmation is required, so a missing entry is treated as a startup bug.
 const TOOL_ANNOTATIONS: Record<string, VerityToolAnnotations> = {
   open_workspace: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  task_bootstrap: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   read_file: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
   write_file: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
   edit_file: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
@@ -177,9 +178,14 @@ const TOOL_ANNOTATIONS: Record<string, VerityToolAnnotations> = {
   maintenance_runs: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
   verity_blackbox_test: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
   verity_robustness_test: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false },
+  discover_tools: { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
+  invoke_tool: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true },
 };
 
-export function createVerityMcpServer(config: VerityConfig): McpServer {
+export function createVerityMcpServer(
+  config: VerityConfig,
+  defaultClientSessionId?: string
+): McpServer {
   const server = new McpServer(
     {
       name: "verity-mcp",
@@ -196,7 +202,12 @@ DURABLE EXECUTION & RECOVERY INSTRUCTIONS:
 1. At the beginning of substantial multi-step tasks, call "start_run" with a clear goal to create a durable journal and mount the Live Activity Monitor UI.
 2. During milestone completions, call "checkpoint_run" to persist completed and outstanding steps.
 3. If the user prompts "Continue", "Resume", or "Keep going", ALWAYS CALL "resume_run" FIRST. Do not guess state from ChatGPT's collapsed transcript.
-4. The durable source of truth is strictly <server_root>/.verity, NEVER AppData, NEVER OS temp, and NEVER the user workspace.`,
+4. The durable source of truth is strictly <server_root>/.verity, NEVER AppData, NEVER OS temp, and NEVER the user workspace.
+
+FAST-START AGENT INSTRUCTIONS:
+1. For a clear computer or repository task, make the first safe state-gathering/action tool call immediately. Do not spend a long planning phase before the first tool call. When starting repository work, prefer task_bootstrap if workspace/task context is needed.
+2. Prefer the directly exposed hot-path tools for common file, shell, browser, Git, and recovery work. Use discover_tools/invoke_tool only when a specialist capability is actually needed.
+3. Keep verification enabled. Speed comes from fewer schemas, fewer round trips, and compact responses, not from skipping real-state checks.`,
     }
   );
 
@@ -209,14 +220,20 @@ DURABLE EXECUTION & RECOVERY INSTRUCTIONS:
       description: "Live operational activity and recovery monitor for VerityMCP runs",
       mimeType: "text/html;profile=mcp-app",
     },
-    async (uri) => {
+    async (uri, extra) => {
       let runId: string | undefined = undefined;
       try {
         const parsed = new URL(uri.href);
         runId = parsed.searchParams.get("run_id") || undefined;
       } catch {}
       const runObj = runId ? await runManager.getRun(runId) : null;
-      const targetRun = runObj?.run || runManager.getActiveRun();
+      const resourceSessionId =
+        (typeof extra?.sessionId === "string" && extra.sessionId) ||
+        defaultClientSessionId;
+      const targetRun =
+        runObj?.run ||
+        runManager.getActiveRun(resourceSessionId) ||
+        (!resourceSessionId ? runManager.getActiveRun() : null);
       return {
         contents: [
           {
@@ -288,6 +305,49 @@ DURABLE EXECUTION & RECOVERY INSTRUCTIONS:
     "maintenance_runs",
     "verity_blackbox_test",
     "verity_robustness_test",
+  ]);
+
+  const toolProfile = (process.env.VERITY_TOOL_PROFILE || "fast").trim().toLowerCase();
+  const useFastToolProfile = toolProfile !== "full";
+  const HOT_PATH_TOOLS = new Set([
+    "open_workspace",
+    "task_bootstrap",
+    "read_file",
+    "write_file",
+    "edit_file",
+    "apply_patch",
+    "list_directory",
+    "locate_files",
+    "search_code",
+    "get_outline",
+    "exec_command",
+    "read_process_output",
+    "write_stdin",
+    "interrupt_process",
+    "kill_process",
+    "browser_open",
+    "browser_navigate",
+    "browser_snapshot",
+    "browser_click",
+    "browser_fill",
+    "browser_press_key",
+    "browser_screenshot",
+    "screenshot_desktop",
+    "git_status",
+    "git_diff",
+    "verity_diagnostics",
+    "start_run",
+    "checkpoint_run",
+    "resume_run",
+    "complete_run",
+    "list_runs",
+    "get_run",
+    "run_activity_read",
+    "find_runs",
+    "adopt_run",
+    "maintenance_runs",
+    "discover_tools",
+    "invoke_tool",
   ]);
 
   function formatToolDisplayTitle(toolName: string, args: any): string {
@@ -366,6 +426,12 @@ DURABLE EXECUTION & RECOVERY INSTRUCTIONS:
         return `Reverting changes for ${args?.paths?.join(", ") || "all modified files"}`;
       case "open_workspace":
         return `Opening workspace ${args?.path || "."}`;
+      case "task_bootstrap":
+        return `Bootstrapping task context for ${args?.path || "active workspace"}`;
+      case "discover_tools":
+        return `Discovering specialist tools${args?.query ? ` for "${args.query}"` : ""}`;
+      case "invoke_tool":
+        return `Invoking specialist tool: ${args?.name || "unknown"}`;
       case "start_run":
         return `Starting run: ${args?.goal?.slice(0, 40) || ""}`;
       case "checkpoint_run":
@@ -460,6 +526,12 @@ DURABLE EXECUTION & RECOVERY INSTRUCTIONS:
         return `Revert modified files and verify clean Git tree`;
       case "open_workspace":
         return `Bootstrap workspace environment, map architecture, and discover skills`;
+      case "task_bootstrap":
+        return `Gather workspace, Git, relevant-code, running-process, and recent-activity context in one round trip`;
+      case "discover_tools":
+        return `Find deferred specialist capabilities without loading every tool schema up front`;
+      case "invoke_tool":
+        return `Run a deferred specialist capability through the compact gateway`;
       case "start_run":
         return `Initialize durable execution journal and live activity monitor`;
       case "checkpoint_run":
@@ -504,6 +576,14 @@ DURABLE EXECUTION & RECOVERY INSTRUCTIONS:
     return undefined;
   }
 
+  type RegisteredToolDefinition = {
+    name: string;
+    description: string;
+    inputSchema: any;
+    handler: (args: any) => Promise<McpToolResponse>;
+  };
+  const toolRegistry = new Map<string, RegisteredToolDefinition>();
+
   const registerTool = (
     name: string,
     description: string,
@@ -516,12 +596,14 @@ DURABLE EXECUTION & RECOVERY INSTRUCTIONS:
     }
     const purposeField = z.string().optional().describe("Concise operational reason why this action is being performed right now (for user live activity stream).");
     const expectedOutcomeField = z.string().optional().describe("What system state or result is expected if this action succeeds.");
+    const responseDetailField = z.enum(["compact", "full"]).optional().describe("Response detail. compact is default; full includes the complete structured JSON payload.");
 
     let inputSchema: any;
     if (shape instanceof z.ZodObject) {
       inputSchema = shape.extend({
         purpose: purposeField,
         expected_outcome: expectedOutcomeField,
+        response_detail: responseDetailField,
       });
     } else if (shape instanceof z.ZodType) {
       inputSchema = shape;
@@ -530,10 +612,17 @@ DURABLE EXECUTION & RECOVERY INSTRUCTIONS:
         ...shape,
         purpose: purposeField,
         expected_outcome: expectedOutcomeField,
+        response_detail: responseDetailField,
       });
     }
 
-    server.registerTool(name, { description, inputSchema, annotations } as any, async (args: any): Promise<any> => {
+    const definition: RegisteredToolDefinition = { name, description, inputSchema, handler };
+    toolRegistry.set(name, definition);
+    if (useFastToolProfile && !HOT_PATH_TOOLS.has(name)) {
+      return;
+    }
+
+    server.registerTool(name, { description, inputSchema, annotations } as any, async (args: any, extra: any): Promise<any> => {
       const startTime = Date.now();
       const callId = activityStream.generateCallId();
       const callerPurpose = typeof args?.purpose === "string" && args.purpose.trim() ? args.purpose.trim() : undefined;
@@ -542,6 +631,10 @@ DURABLE EXECUTION & RECOVERY INSTRUCTIONS:
       const purpose = callerPurpose || formatDefaultPurpose(name, args);
       const purposeSource = callerPurpose ? "caller" : "tool_default";
       const target = extractToolTarget(args);
+      const clientSessionId =
+        (typeof extra?.sessionId === "string" && extra.sessionId) ||
+        defaultClientSessionId;
+      const ownerRunId = runManager.getActiveRun(clientSessionId)?.run_id;
 
       const callCtx: ActivityCallContext = {
         callId,
@@ -552,6 +645,8 @@ DURABLE EXECUTION & RECOVERY INSTRUCTIONS:
         expectedOutcome: callerExpectedOutcome,
         target,
         workspaceId: workspaceManager.getActiveWorkspaceRoot() || undefined,
+        clientSessionId,
+        ownerRunId,
         args,
       };
 
@@ -644,6 +739,110 @@ DURABLE EXECUTION & RECOVERY INSTRUCTIONS:
     async ({ path: targetPath }) => {
       const res = await workspaceManager.openWorkspace(targetPath, config.allowedRoots);
       return formatMcpResponse(res);
+    }
+  );
+
+  registerTool(
+    "task_bootstrap",
+    "Fast one-call task bootstrap. Opens the workspace when needed, refreshes Git state, optionally searches for task-relevant code, and returns running process plus recent activity context.",
+    {
+      path: z.string().optional().describe("Workspace path. Reuses the active workspace when omitted."),
+      query: z.string().optional().describe("Optional code-search phrase related to the task."),
+      max_matches: z.number().int().positive().max(30).optional().describe("Maximum code matches. Defaults to 12."),
+      recent_activity: z.number().int().nonnegative().max(20).optional().describe("Recent activity events to include. Defaults to 5."),
+    },
+    async ({ path: targetPath, query, max_matches, recent_activity }) => {
+      const startedAt = Date.now();
+      let workspaceOpenResult: any | undefined;
+      let workspace = workspaceManager.getWorkspace();
+
+      if (targetPath || !workspace) {
+        workspaceOpenResult = await workspaceManager.openWorkspace(targetPath, config.allowedRoots);
+        if (!workspaceOpenResult.success) {
+          return formatMcpResponse(workspaceOpenResult);
+        }
+        workspace = workspaceManager.getWorkspace();
+      }
+
+      const root = getRoot();
+      const gitResult = executeGitStatus(root);
+      const searchResult = query
+        ? executeSearchCode({
+            workspaceRoot: root,
+            allowedRoots: config.allowedRoots,
+            query,
+            caseSensitive: false,
+            maxResults: max_matches ?? 12,
+          })
+        : undefined;
+      const runningProcesses = processManager
+        .listSessions()
+        .filter((session: any) => session.status === "running")
+        .map((session: any) => ({
+          session_id: session.id,
+          pid: session.pid,
+          command: session.command,
+          cwd: session.cwd,
+          shell: session.shell,
+          started_at: session.startedAt,
+        }));
+      const recentEvents = activityStream
+        .list(recent_activity ?? 5)
+        .filter((event: any) => event.tool !== "task_bootstrap")
+        .slice(-(recent_activity ?? 5));
+
+      const git = gitResult.data;
+      const repoMap = workspace?.repoMap;
+      const lines = [
+        `Workspace: ${root}`,
+        repoMap?.summary ? `Repository: ${repoMap.summary}` : undefined,
+        git
+          ? `Git: ${git.branch} | ${git.isClean ? "clean" : `${git.modified.length + git.untracked.length} changed/untracked`}`
+          : `Git: unavailable`,
+        repoMap?.languages?.length ? `Languages: ${repoMap.languages.join(", ")}` : undefined,
+        `Running managed processes: ${runningProcesses.length}`,
+      ].filter(Boolean) as string[];
+
+      if (searchResult) {
+        lines.push("", `Relevant code for "${query}":`, searchResult.text);
+      }
+      if (recentEvents.length > 0) {
+        lines.push(
+          "",
+          "Recent activity:",
+          ...recentEvents.map((event: any) => `- #${event.seq} ${event.type}: ${event.title}`)
+        );
+      }
+
+      const success = gitResult.success && (searchResult?.success ?? true);
+      return formatMcpResponse({
+        success,
+        action: "task_bootstrap",
+        error_code: success ? undefined : "BOOTSTRAP_PARTIAL_FAILURE",
+        text: lines.join("\n"),
+        summary: `Task context ready for ${root}`,
+        data: {
+          workspace: {
+            id: workspace?.id,
+            root,
+            summary: repoMap?.summary,
+            languages: repoMap?.languages,
+            scripts: repoMap?.scripts,
+          },
+          git,
+          search: searchResult?.data,
+          running_processes: runningProcesses,
+          recent_activity: recentEvents,
+          workspace_opened: Boolean(workspaceOpenResult),
+        },
+        verification: {
+          performed: true,
+          passed: success,
+          method: "composite_workspace_git_search_state_readback",
+          error: success ? undefined : searchResult?.text || gitResult.text,
+        },
+        durationMs: Date.now() - startedAt,
+      });
     }
   );
 
@@ -2762,6 +2961,159 @@ DURABLE EXECUTION & RECOVERY INSTRUCTIONS:
     async ({ seed, workspace_root }) => {
       const res = await runBlackboxTest({ seed, workspaceRoot: workspace_root });
       return formatMcpResponse(res);
+    }
+  );
+
+  const getParameterHints = (definition: RegisteredToolDefinition) => {
+    const schema: any = definition.inputSchema;
+    const shapeCandidate = schema?.shape ?? schema?._def?.shape;
+    const shape =
+      typeof shapeCandidate === "function"
+        ? shapeCandidate()
+        : shapeCandidate && typeof shapeCandidate === "object"
+          ? shapeCandidate
+          : {};
+    return Object.entries(shape)
+      .filter(([name]) => !["purpose", "expected_outcome", "response_detail"].includes(name))
+      .map(([name, field]: [string, any]) => ({
+        name,
+        optional: typeof field?.isOptional === "function" ? field.isOptional() : false,
+        description: field?.description || undefined,
+      }));
+  };
+
+  // Fast-profile gateway: specialist schemas stay deferred until the agent actually needs them.
+  registerTool(
+    "discover_tools",
+    "Searches deferred DesktopMCP capabilities by name/description and returns concise argument hints. Use only when the required specialist tool is not directly exposed.",
+    {
+      query: z.string().optional().describe("Capability keyword, for example worktree, notebook, browser tab, activity, or task."),
+      limit: z.number().int().min(1).max(20).optional().describe("Maximum matches. Defaults to 10."),
+      include_hot: z.boolean().optional().describe("Include already-direct hot-path tools in results. Defaults to false."),
+    },
+    async ({ query, limit, include_hot }) => {
+      const needle = String(query || "").trim().toLowerCase();
+      const allDefinitions = Array.from(toolRegistry.values()).filter(
+        (definition) => definition.name !== "discover_tools" && definition.name !== "invoke_tool"
+      );
+      const deferredDefinitions = allDefinitions.filter((definition) => !HOT_PATH_TOOLS.has(definition.name));
+      const pool = include_hot ? allDefinitions : deferredDefinitions;
+      const matches = pool
+        .filter((definition) => {
+          if (!needle) return true;
+          return (
+            definition.name.toLowerCase().includes(needle) ||
+            definition.description.toLowerCase().includes(needle)
+          );
+        })
+        .slice(0, limit ?? 10)
+        .map((definition) => ({
+          name: definition.name,
+          description: definition.description,
+          direct: !useFastToolProfile || HOT_PATH_TOOLS.has(definition.name),
+          parameters: getParameterHints(definition),
+        }));
+
+      const lines =
+        matches.length > 0
+          ? matches.map((match) => {
+              const args = match.parameters
+                .map((parameter) => parameter.name + (parameter.optional ? "?" : ""))
+                .join(", ");
+              return "- " + match.name + (args ? " (" + args + ")" : "") + ": " + match.description;
+            })
+          : ["No matching specialist tools found."];
+
+      return formatMcpResponse({
+        success: true,
+        action: "discover_tools",
+        text: lines.join("\n"),
+        summary: "Found " + matches.length + " matching tool(s)",
+        data: {
+          profile: useFastToolProfile ? "fast" : "full",
+          direct_tool_count: allDefinitions.filter((definition) => !useFastToolProfile || HOT_PATH_TOOLS.has(definition.name)).length,
+          deferred_tool_count: useFastToolProfile ? deferredDefinitions.length : 0,
+          matches,
+        },
+        verification: { performed: true, passed: true, method: "internal_tool_registry" },
+      });
+    }
+  );
+
+  registerTool(
+    "invoke_tool",
+    "Invokes a deferred DesktopMCP capability by name. Discover it first when its arguments are unknown. Real-state verification performed by the target tool remains enabled.",
+    {
+      name: z.string().describe("Exact DesktopMCP tool name returned by discover_tools."),
+      arguments: z.any().optional().describe("Argument object for the target tool."),
+    },
+    async ({ name, arguments: rawArguments }) => {
+      if (name === "discover_tools" || name === "invoke_tool") {
+        return formatMcpResponse({
+          success: false,
+          action: "invoke_tool",
+          error_code: "INVALID_DEFERRED_TARGET",
+          text: "Gateway tools cannot recursively invoke themselves.",
+          verification: { performed: true, passed: false, method: "internal_tool_registry" },
+        });
+      }
+
+      const definition = toolRegistry.get(name);
+      if (!definition) {
+        return formatMcpResponse({
+          success: false,
+          action: "invoke_tool",
+          error_code: "TOOL_NOT_FOUND",
+          text: "Unknown DesktopMCP tool: " + name,
+          verification: { performed: true, passed: false, method: "internal_tool_registry" },
+        });
+      }
+
+      const parsed = definition.inputSchema.safeParse(rawArguments || {});
+      if (!parsed.success) {
+        return formatMcpResponse({
+          success: false,
+          action: "invoke_tool " + name,
+          error_code: "INVALID_TOOL_ARGUMENTS",
+          text: "Invalid arguments for " + name + ": " + parsed.error.message,
+          verification: { performed: true, passed: false, method: "zod_argument_validation" },
+        });
+      }
+
+      const outerContext = activityContextStorage.getStore();
+      const inheritedResponseDetail = outerContext?.args?.response_detail;
+      const targetArgs = {
+        ...parsed.data,
+        ...(parsed.data?.response_detail || !inheritedResponseDetail
+          ? {}
+          : { response_detail: inheritedResponseDetail }),
+      };
+      const targetContext: ActivityCallContext = {
+        ...(outerContext || {
+          callId: activityStream.generateCallId(),
+          toolName: name,
+          displayTitle: formatToolDisplayTitle(name, targetArgs),
+          purpose: formatDefaultPurpose(name, targetArgs),
+          purposeSource: "tool_default",
+        }),
+        toolName: name,
+        displayTitle: formatToolDisplayTitle(name, targetArgs),
+        purpose:
+          (typeof targetArgs?.purpose === "string" && targetArgs.purpose.trim()) ||
+          formatDefaultPurpose(name, targetArgs),
+        purposeSource:
+          typeof targetArgs?.purpose === "string" && targetArgs.purpose.trim()
+            ? "caller"
+            : "tool_default",
+        expectedOutcome:
+          typeof targetArgs?.expected_outcome === "string" && targetArgs.expected_outcome.trim()
+            ? targetArgs.expected_outcome.trim()
+            : undefined,
+        target: extractToolTarget(targetArgs),
+        args: targetArgs,
+      };
+
+      return activityContextStorage.run(targetContext, () => definition.handler(targetArgs));
     }
   );
 

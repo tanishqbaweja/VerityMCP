@@ -36,6 +36,8 @@ export interface ActivityEvent {
   reason?: string;
   next_action?: string;
   workspace_id?: string;
+  client_session_id?: string;
+  owner_run_id?: string;
   browser_session_id?: string;
   process_session_id?: string;
   details?: Record<string, unknown>;
@@ -50,6 +52,8 @@ export interface ActivityCallContext {
   expectedOutcome?: string;
   target?: Record<string, unknown> | string;
   workspaceId?: string;
+  clientSessionId?: string;
+  ownerRunId?: string;
   browserSessionId?: string;
   processSessionId?: string;
   args?: Record<string, unknown>;
@@ -124,6 +128,8 @@ export class ActivityStreamManager {
       expected_outcome: resolvedExpectedOutcome,
       target: eventData.target || ctx?.target,
       workspace_id: eventData.workspace_id || ctx?.workspaceId,
+      client_session_id: eventData.client_session_id || ctx?.clientSessionId,
+      owner_run_id: eventData.owner_run_id || ctx?.ownerRunId,
       browser_session_id: eventData.browser_session_id || ctx?.browserSessionId,
       process_session_id: eventData.process_session_id || ctx?.processSessionId,
     };

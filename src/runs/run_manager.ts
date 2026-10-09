@@ -28,7 +28,11 @@ import {
   canonicalArtifactKey,
   isInternalRun,
 } from "./utils.js";
-import { activityStream, type ActivityEvent } from "../observability/activity_stream.js";
+import {
+  activityStream,
+  activityContextStorage,
+  type ActivityEvent,
+} from "../observability/activity_stream.js";
 import { calculateSha256 } from "../verification/index.js";
 import { browserManager } from "../browser/browser_manager.js";
 import { processManager } from "../shell/process_manager.js";
@@ -53,7 +57,10 @@ import type {
 } from "./types.js";
 
 export class RunManager {
-  private activeRun: RunMetadata | null = null;
+  private legacyActiveRun: RunMetadata | null = null;
+  private activeRunsBySession = new Map<string, RunMetadata>();
+  private eventSessionOverride: string | undefined;
+  private eventRunOverride: RunMetadata | null | undefined;
   private initialized = false;
   private initializing = false;
   private serverInstanceId = `srv_${process.pid}_${Date.now()}`;
@@ -161,12 +168,167 @@ export class RunManager {
     }
   }
 
-  public getActiveRun(): RunMetadata | null {
+  private getCurrentClientSessionId(explicitSessionId?: string): string | undefined {
+    return (
+      explicitSessionId ||
+      this.eventSessionOverride ||
+      activityContextStorage.getStore()?.clientSessionId
+    );
+  }
+
+  private get activeRun(): RunMetadata | null {
+    if (this.eventRunOverride !== undefined) {
+      return this.eventRunOverride;
+    }
+    const sessionId = this.getCurrentClientSessionId();
+    if (sessionId) {
+      return this.activeRunsBySession.get(sessionId) || null;
+    }
+    return this.legacyActiveRun;
+  }
+
+  private set activeRun(run: RunMetadata | null) {
+    const sessionId = this.getCurrentClientSessionId();
+    if (sessionId) {
+      if (run) {
+        const existing = [...this.activeRunsBySession.values()].find(
+          (candidate) => candidate.run_id === run.run_id
+        );
+        const boundRun = existing || run;
+        if (existing && existing !== run) {
+          Object.assign(existing, run);
+        }
+        boundRun.origin_mcp_session_id ||= sessionId;
+        boundRun.associated_mcp_session_ids ||= [];
+        if (!boundRun.associated_mcp_session_ids.includes(sessionId)) {
+          boundRun.associated_mcp_session_ids.push(sessionId);
+        }
+        this.activeRunsBySession.set(sessionId, boundRun);
+      } else {
+        this.activeRunsBySession.delete(sessionId);
+      }
+      return;
+    }
+    this.legacyActiveRun = run;
+  }
+
+  public getActiveRun(sessionId?: string): RunMetadata | null {
+    if (sessionId) {
+      return this.activeRunsBySession.get(sessionId) || null;
+    }
     return this.activeRun;
   }
 
-  public setActiveRun(run: RunMetadata | null): void {
-    this.activeRun = run;
+  public setActiveRun(run: RunMetadata | null, sessionId?: string): void {
+    if (!sessionId) {
+      this.activeRun = run;
+      return;
+    }
+    const previous = this.eventSessionOverride;
+    this.eventSessionOverride = sessionId;
+    try {
+      this.activeRun = run;
+    } finally {
+      this.eventSessionOverride = previous;
+    }
+  }
+
+  private getUniqueInMemoryRuns(): RunMetadata[] {
+    const byId = new Map<string, RunMetadata>();
+    if (this.legacyActiveRun) {
+      byId.set(this.legacyActiveRun.run_id, this.legacyActiveRun);
+    }
+    for (const run of this.activeRunsBySession.values()) {
+      byId.set(run.run_id, run);
+    }
+    return [...byId.values()];
+  }
+
+  private findRunByIdForEvent(runId: string): RunMetadata | undefined {
+    const inMemory = this.getUniqueInMemoryRuns().find((run) => run.run_id === runId);
+    if (inMemory) return inMemory;
+
+    try {
+      const runJsonPath = path.join(getRunDirPath(runId), "run.json");
+      if (!fs.existsSync(runJsonPath)) return undefined;
+      return JSON.parse(fs.readFileSync(runJsonPath, "utf-8")) as RunMetadata;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private findResourceOwnerRun(event: ActivityEvent): RunMetadata | undefined {
+    const runs = this.getUniqueInMemoryRuns();
+    if (runs.length === 0) return undefined;
+
+    const isBrowserTool = Boolean(event.tool?.startsWith("browser_"));
+    const browserSessionId =
+      event.browser_session_id ||
+      (isBrowserTool ? (event.details?.session_id as string) || (event.details?.sessionId as string) : undefined);
+
+    if (browserSessionId) {
+      const owner = runs.find((run) =>
+        run.browser_sessions.some((session) => session.id === browserSessionId)
+      );
+      if (owner) return owner;
+    }
+
+    const isProcessTool = Boolean(
+      event.tool &&
+      (event.tool.includes("process") ||
+        event.tool === "exec_command" ||
+        event.tool === "process_completed" ||
+        event.tool === "kill_process" ||
+        event.tool === "stop_process")
+    );
+    const processSessionId =
+      event.process_session_id ||
+      (isProcessTool
+        ? (event.details?.process_id as string) ||
+          (event.details?.session_id as string) ||
+          (event.details?.sessionId as string) ||
+          (typeof event.target === "string" && event.target.startsWith("proc_")
+            ? event.target
+            : undefined)
+        : undefined);
+
+    if (processSessionId) {
+      const owner = runs.find((run) =>
+        run.process_sessions.some((session) => session.id === processSessionId)
+      );
+      if (owner) return owner;
+    }
+
+    if (event.tool === "delete_file") {
+      const deletedPath =
+        typeof event.target === "string"
+          ? event.target
+          : (event.details?.file_path as string) || (event.details?.path as string);
+      if (deletedPath) {
+        const canonical = canonicalArtifactKey(deletedPath);
+        const owner = runs.find((run) =>
+          run.temporary_files.some(
+            (file) => canonicalArtifactKey(file.resolved_path || file.path) === canonical
+          )
+        );
+        if (owner) return owner;
+      }
+    }
+
+    if (event.tool === "exit_worktree") {
+      const worktreePath =
+        (event.details?.worktree_path as string) ||
+        (typeof event.target === "string" ? event.target : undefined);
+      if (worktreePath) {
+        const resolved = path.resolve(worktreePath);
+        const owner = runs.find((run) =>
+          run.worktrees.some((worktree) => path.resolve(worktree.path) === resolved)
+        );
+        if (owner) return owner;
+      }
+    }
+
+    return undefined;
   }
 
   public generateRunId(): string {
@@ -614,6 +776,38 @@ export class RunManager {
    * Automatically tracks created browser sessions, background processes, worktrees, and temporary files.
    */
   public appendActivityEvent(event: ActivityEvent): void {
+    const previousSession = this.eventSessionOverride;
+    const previousRun = this.eventRunOverride;
+
+    const resourceOwner = this.findResourceOwnerRun(event);
+    const explicitOwner = event.owner_run_id
+      ? this.findRunByIdForEvent(event.owner_run_id)
+      : undefined;
+    const sessionOwner = event.client_session_id
+      ? this.activeRunsBySession.get(event.client_session_id)
+      : undefined;
+    const routedRun = resourceOwner || explicitOwner || sessionOwner;
+
+    if (routedRun) {
+      this.eventRunOverride = routedRun;
+    } else if (event.client_session_id) {
+      this.eventSessionOverride = event.client_session_id;
+    }
+
+    const routedEvent =
+      routedRun && event.owner_run_id !== routedRun.run_id
+        ? { ...event, owner_run_id: routedRun.run_id }
+        : event;
+
+    try {
+      this.appendActivityEventScoped(routedEvent);
+    } finally {
+      this.eventRunOverride = previousRun;
+      this.eventSessionOverride = previousSession;
+    }
+  }
+
+  private appendActivityEventScoped(event: ActivityEvent): void {
     if (!this.activeRun) return;
 
     const runId = this.activeRun.run_id;
@@ -1624,6 +1818,10 @@ export class RunManager {
     error_code?: string;
   }> {
     await this.init();
+    // Resource lifecycle events persist asynchronously through writeQueue. A caller
+    // may close/kill a resource and immediately complete the run, so completion
+    // must observe those writes before loading run.json.
+    await this.writeQueue;
     const targetId = runId || this.activeRun?.run_id;
     if (!targetId) {
       throw new Error("No active run to complete and no run_id supplied.");
@@ -1676,16 +1874,32 @@ export class RunManager {
       );
     }
 
-    // Audit active browser sessions
-    const activeBrowsers = browserManager.listSessions();
+    // Audit only resources owned by THIS run. Other chats may legitimately have
+    // browsers/processes alive in the same VerityMCP server.
+    const trackedBrowserIds = new Set(
+      run.browser_sessions
+        .filter((b) => b.active === true && b.status !== "closed")
+        .map((b) => b.id)
+    );
+    const activeBrowsers = browserManager
+      .listSessions()
+      .filter((session) => trackedBrowserIds.has(session.id));
     if (activeBrowsers.length > 0) {
-      cleanupWarnings.push(`${activeBrowsers.length} browser session(s) still open. Close them with browser_close.`);
+      cleanupWarnings.push(
+        `${activeBrowsers.length} browser session(s) owned by this run still open. Close them with browser_close.`
+      );
     }
 
-    // Audit active background processes
-    const activeProcesses = processManager.listSessions().filter((p) => p.status === "running");
+    const trackedProcessIds = new Set(
+      run.process_sessions.filter((p) => p.running).map((p) => p.id)
+    );
+    const activeProcesses = processManager
+      .listSessions()
+      .filter((p) => p.status === "running" && trackedProcessIds.has(p.id));
     if (activeProcesses.length > 0) {
-      cleanupWarnings.push(`${activeProcesses.length} background process(es) still running.`);
+      cleanupWarnings.push(
+        `${activeProcesses.length} background process(es) owned by this run still running.`
+      );
     }
 
     // Guard: Enforce cleanup debt guard unless explicitly overridden

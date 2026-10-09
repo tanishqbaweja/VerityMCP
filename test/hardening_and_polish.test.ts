@@ -64,6 +64,56 @@ describe("VerityMCP Polish & Hardening Acceptance Suite", () => {
     assert.deepStrictEqual(parsed.data, { score: 100 });
   });
 
+  it("uses compact response metadata without duplicating large data and preserves full override", () => {
+    const previousDetail = process.env.VERITY_RESPONSE_DETAIL;
+    process.env.VERITY_RESPONSE_DETAIL = "compact";
+    try {
+      const largeValue = "x".repeat(5000);
+      const compact = formatMcpResponse({
+        success: true,
+        action: "compact_test",
+        text: "Compact response body",
+        data: { largeValue },
+        verification: {
+          performed: true,
+          passed: true,
+          method: "compact_test_verification",
+        },
+      });
+      const compactText = compact.content[0].text;
+      assert.ok(compactText.includes("--- RESPONSE_META_JSON ---"));
+      assert.ok(!compactText.includes("--- STRUCTURED_PAYLOAD_JSON ---"));
+      assert.ok(!compactText.includes(largeValue));
+      const compactMeta = JSON.parse(compactText.split("--- RESPONSE_META_JSON ---\n")[1]);
+      assert.strictEqual(compactMeta.data_omitted_from_meta, true);
+      assert.ok(compactMeta.data_bytes > 5000);
+
+      const full = formatMcpResponse(
+        {
+          success: true,
+          action: "compact_test",
+          text: "Full response body",
+          data: { largeValue },
+          verification: {
+            performed: true,
+            passed: true,
+            method: "compact_test_verification",
+          },
+        },
+        { responseDetail: "full" }
+      );
+      const fullText = full.content[0].text;
+      assert.ok(fullText.includes("--- STRUCTURED_PAYLOAD_JSON ---"));
+      assert.ok(fullText.includes(largeValue));
+    } finally {
+      if (previousDetail === undefined) {
+        delete process.env.VERITY_RESPONSE_DETAIL;
+      } else {
+        process.env.VERITY_RESPONSE_DETAIL = previousDetail;
+      }
+    }
+  });
+
   it("enforces expected_sha256 protection against concurrent edits in edit_file", async () => {
     const tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "verity-sha-test-"));
     const filePath = path.join(tmpDir, "sample.txt");

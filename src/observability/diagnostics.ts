@@ -79,7 +79,7 @@ export interface SelfTestResult {
   checks: SelfTestCheck[];
 }
 
-class ObservabilityManager {
+export class ObservabilityManager {
   private auditLog: ToolAuditEntry[] = [];
   private maxAuditEntries = 200;
 
@@ -144,13 +144,13 @@ class ObservabilityManager {
     const executionSuccessRate =
       attemptedOperations > 0
         ? ((successfulCalls / attemptedOperations) * 100).toFixed(1) + "%"
-        : totalCalls > 0 ? "100.0%" : "100.0%";
+        : "N/A";
 
     const verifiableOperations = successfulCalls + verificationFailures;
     const verificationSuccessRate =
       verifiableOperations > 0
         ? ((successfulCalls / verifiableOperations) * 100).toFixed(1) + "%"
-        : "100.0%";
+        : "N/A";
 
     const serverRoot = getServerRoot();
     const persistentDataRoot = getPersistentDataRoot();
@@ -734,6 +734,7 @@ class ObservabilityManager {
           cwd: workspaceRoot || os.tmpdir(),
           shell: "powershell",
           timeoutMs: 8000,
+          yieldMs: 8000,
         });
         const passed = Boolean(
           utfRes.success &&
@@ -2716,10 +2717,14 @@ class ObservabilityManager {
             { windowsHide: false }
           );
 
-          await new Promise((r) => setTimeout(r, 800));
+          let found = false;
+          const focusDiscoveryDeadline = Date.now() + 5000;
+          while (!found && Date.now() < focusDiscoveryDeadline) {
+            const listRes = executeListWindows();
+            found = (listRes.data || []).some((w) => w.title?.includes(accWinTitle));
+            if (!found) await new Promise((r) => setTimeout(r, 100));
+          }
 
-          const listRes = executeListWindows();
-          const found = (listRes.data || []).some((w) => w.title?.includes(accWinTitle));
           const focusRes = executeFocusWindow(accWinTitle);
 
           const focusPassed =
@@ -2773,10 +2778,14 @@ class ObservabilityManager {
           cwd: os.tmpdir(),
         });
         const sessId = spawnRes.data?.sessionId;
-        await new Promise((r) => setTimeout(r, 450));
+        let sess = sessId ? processManager.getSession(sessId) : null;
+        const terminalDeadline = Date.now() + 4000;
+        while (sess?.status === "running" && Date.now() < terminalDeadline) {
+          await new Promise((r) => setTimeout(r, 50));
+          sess = sessId ? processManager.getSession(sessId) : null;
+        }
         await fs.rm(deadScript, { force: true }).catch(() => {});
 
-        const sess = sessId ? processManager.getSession(sessId) : null;
         const autoReconciled = sess && sess.status !== "running" && sess.exitCode !== null;
         checks.push({
           name: "background_dead_process_auto_reconciliation",

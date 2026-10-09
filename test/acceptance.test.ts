@@ -75,6 +75,23 @@ describe("VerityMCP Comprehensive Acceptance Suite", () => {
     assert.strictEqual(copyRes.success, true);
     assert.strictEqual(copyRes.verification.passed, true);
 
+    // 5b. binary copy preserves exact bytes and reports the true byte count
+    const binarySource = Buffer.alloc(513);
+    for (let i = 0; i < binarySource.length; i++) binarySource[i] = (i * 73 + 19) & 0xff;
+    await fs.writeFile(path.join(tmpDir, "src", "binary.bin"), binarySource);
+    const binaryCopyRes = await executeCopyFile({
+      workspaceRoot: tmpDir,
+      sourcePath: "src/binary.bin",
+      destinationPath: "src/binary_copy.bin",
+    });
+    assert.strictEqual(binaryCopyRes.success, true);
+    assert.strictEqual(binaryCopyRes.data?.bytesCopied, 513);
+    assert.strictEqual(binaryCopyRes.verification.passed, true);
+    assert.deepStrictEqual(
+      await fs.readFile(path.join(tmpDir, "src", "binary_copy.bin")),
+      binarySource
+    );
+
     // 6. move_file with relocation verification
     const moveRes = await executeMoveFile({
       workspaceRoot: tmpDir,

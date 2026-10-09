@@ -7,7 +7,7 @@ import http from "node:http";
 import assert from "node:assert";
 import { execFileSync, spawn } from "node:child_process";
 import { getServerRoot } from "../storage/paths.js";
-import { workspaceManager } from "../workspace/workspace_manager.js";
+import { WorkspaceManager, workspaceManager } from "../workspace/workspace_manager.js";
 import { processManager } from "../shell/process_manager.js";
 import { browserManager } from "../browser/browser_manager.js";
 import { runManager } from "../runs/run_manager.js";
@@ -70,7 +70,13 @@ export async function runBlackboxTest(options?: {
 
   const randSuffix = Math.floor(prng() * 1000000).toString(16);
   const serverRoot = getServerRoot();
-  const fixtureDir = path.join(serverRoot, ".verity", "test-fixtures", `bb_${seed.replace(/[^a-zA-Z0-9_-]/g, "_")}_${randSuffix}`);
+  const fixtureBase = options?.workspaceRoot
+    ? path.resolve(options.workspaceRoot)
+    : path.join(serverRoot, ".verity", "test-fixtures");
+  const fixtureDir = path.join(
+    fixtureBase,
+    `bb_${seed.replace(/[^a-zA-Z0-9_-]/g, "_")}_${randSuffix}`
+  );
 
   const checks: BlackboxCheck[] = [];
 
@@ -82,7 +88,33 @@ export async function runBlackboxTest(options?: {
   });
 
   const prevActiveRun = runManager.getActiveRun();
+  const prevWorkspaceRoot = workspaceManager.getWorkspace()?.root;
   runManager.setActiveRun(null);
+
+  const restoreCallerWorkspace = async (): Promise<boolean> => {
+    try {
+      const active = workspaceManager.getWorkspace();
+
+      if (prevWorkspaceRoot && fsSync.existsSync(prevWorkspaceRoot)) {
+        const currentRoot = active?.root ? path.resolve(active.root).toLowerCase() : undefined;
+        const previousRoot = path.resolve(prevWorkspaceRoot).toLowerCase();
+        if (currentRoot !== previousRoot) {
+          const restored = await workspaceManager.openWorkspace(prevWorkspaceRoot);
+          if (!restored.success) return false;
+        }
+        return path.resolve(workspaceManager.getActiveWorkspaceRoot()).toLowerCase() === previousRoot;
+      }
+
+      // The caller had no workspace (or its former root no longer exists). Do not
+      // leave an internal fixture as the global active workspace.
+      if (active) {
+        await workspaceManager.closeWorkspace(active.id);
+      }
+      return prevWorkspaceRoot ? false : workspaceManager.getWorkspace() === undefined;
+    } catch {
+      return false;
+    }
+  };
 
   await fs.mkdir(fixtureDir, { recursive: true });
 
@@ -333,8 +365,6 @@ setInterval(() => {}, 1000);`,
       execFileSync("git", ["-C", repoDir, "add", "README.md"], { encoding: "utf-8", windowsHide: true });
       execFileSync("git", ["-C", repoDir, "commit", "-m", "initial commit"], { encoding: "utf-8", windowsHide: true });
 
-      const prevWs = workspaceManager.getWorkspace();
-      const prevDefaultId = (workspaceManager as any).defaultWorkspaceId;
       await workspaceManager.openWorkspace(repoDir, [repoDir]);
 
       const enterRes = await executeEnterWorktree({
@@ -364,20 +394,18 @@ setInterval(() => {}, 1000);`,
         forceExitWorked = exitForceRes.success;
       }
 
-      if (prevWs) {
-        (workspaceManager as any).defaultWorkspaceId = prevDefaultId;
-      }
+      const callerWorkspaceRestored = await restoreCallerWorkspace();
 
       await fs.rm(repoDir, { recursive: true, force: true }).catch(() => {});
 
-      const passed = enterRes.success && dirtyBlocked && forceExitWorked;
+      const passed = enterRes.success && dirtyBlocked && forceExitWorked && callerWorkspaceRestored;
       checks.push({
         name: "git_worktree_dirty_guard_and_lifecycle",
         category: "git",
         passed,
         durationMs: Date.now() - gitStart,
-        details: { enterOk: enterRes.success, dirtyBlocked, forceExitWorked },
-        error: passed ? undefined : "Git worktree dirty guard or exit failed",
+        details: { enterOk: enterRes.success, dirtyBlocked, forceExitWorked, callerWorkspaceRestored },
+        error: passed ? undefined : "Git worktree dirty guard, exit, or caller-workspace restoration failed",
       });
     } catch (err: any) {
       checks.push({
@@ -759,21 +787,26 @@ setInterval(() => {}, 1000);
     // 13. Workspace Handle Release: Directory deletion after workspace switch without EBUSY
     const wsRelStart = Date.now();
     try {
+      // Use an isolated manager here. The seeded battery can run while other MCP
+      // conversations are active, so mutating the singleton workspace manager
+      // would clobber their current workspace and could leave it pointing at a
+      // fixture that this test deletes during cleanup.
+      const isolatedWorkspaceManager = new WorkspaceManager();
       const switchWsDir = path.join(fixtureDir, `ws_switch_${randSuffix}`);
       await fs.mkdir(switchWsDir, { recursive: true });
       await fs.writeFile(path.join(switchWsDir, "index.ts"), "export const a = 1;\n", "utf-8");
 
       // Open workspace
-      const openA = await workspaceManager.openWorkspace(switchWsDir);
+      const openA = await isolatedWorkspaceManager.openWorkspace(switchWsDir);
       let disposableRan = false;
       if (openA.data?.workspace.id) {
-        workspaceManager.registerDisposable(openA.data.workspace.id, () => {
+        isolatedWorkspaceManager.registerDisposable(openA.data.workspace.id, () => {
           disposableRan = true;
         });
       }
 
       // Switch to another workspace
-      await workspaceManager.openWorkspace(fixtureDir);
+      await isolatedWorkspaceManager.openWorkspace(fixtureDir);
 
       // Verify disposable ran
       assert.ok(disposableRan, "Workspace disposable should run on switch");
@@ -806,7 +839,30 @@ setInterval(() => {}, 1000);
       });
     }
   } finally {
-    // Verified Cleanup Audit: Clean fixture directory and restore state
+    // Restore caller-visible global state BEFORE deleting the fixture. This is
+    // critical because browser/workspace tests intentionally make fixtureDir the
+    // active workspace; deleting it first leaves subsequent MCP commands with a
+    // dead cwd and misleading spawn ENOENT failures.
+    const callerWorkspaceRestored = await restoreCallerWorkspace();
+    if (!callerWorkspaceRestored) {
+      checks.push({
+        name: "blackbox_caller_workspace_restored",
+        category: "workspace_lifecycle",
+        passed: false,
+        durationMs: 0,
+        details: { previousWorkspaceRoot: prevWorkspaceRoot || null },
+        error: "Black-box cleanup could not restore the caller workspace",
+      });
+    } else {
+      checks.push({
+        name: "blackbox_caller_workspace_restored",
+        category: "workspace_lifecycle",
+        passed: true,
+        durationMs: 0,
+        details: { previousWorkspaceRoot: prevWorkspaceRoot || null },
+      });
+    }
+
     await fs.rm(fixtureDir, { recursive: true, force: true }).catch(() => {});
     runManager.setActiveRun(prevActiveRun);
   }

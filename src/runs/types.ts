@@ -115,6 +115,8 @@ export interface RunMetadata {
   idempotency_key?: string;
   origin_conversation_id?: string;
   associated_conversation_ids?: string[];
+  origin_mcp_session_id?: string;
+  associated_mcp_session_ids?: string[];
   adopted_at?: string;
   server_instance_id?: string;
   heartbeat_at?: string;
@@ -160,6 +162,7 @@ export interface ActiveRunPointer {
   server_pid: number;
   server_instance_id?: string;
   heartbeat_at?: string;
+  mcp_session_id?: string;
 }
 
 export interface RunMatchEvidence {

@@ -12,15 +12,31 @@ export interface McpToolResponse {
   _structured?: any;
 }
 
+export type McpResponseDetail = "compact" | "full";
+
 export function formatMcpResponse<T = unknown>(
   res: StandardToolResponse<T>,
   options?: {
     image?: { data: string; mimeType: string };
     resource?: { uri: string; mimeType?: string; text?: string; blob?: string };
     isError?: boolean;
+    responseDetail?: McpResponseDetail;
   }
 ): McpToolResponse {
   const content: McpContentItem[] = [];
+  const ctx = activityContextStorage.getStore();
+  const requestedDetail =
+    options?.responseDetail ||
+    (ctx?.args?.response_detail === "full" ? "full" : ctx?.args?.response_detail === "compact" ? "compact" : undefined);
+  const environmentDetail: McpResponseDetail | undefined =
+    process.env.VERITY_RESPONSE_DETAIL === "full"
+      ? "full"
+      : process.env.VERITY_RESPONSE_DETAIL === "compact"
+        ? "compact"
+        : undefined;
+  const responseDetail: McpResponseDetail =
+    requestedDetail || environmentDetail || (ctx ? "compact" : "full");
+  const fullResponse = responseDetail === "full";
 
   // 1. Primary human / model-readable text
   const lines: string[] = [];
@@ -31,15 +47,17 @@ export function formatMcpResponse<T = unknown>(
     lines.push(`[VerityMCP] FAILED: ${res.action}${res.error_code ? ` [${res.error_code}]` : ""}`);
   }
 
-  if (res.summary && res.summary !== res.text) {
+  if (fullResponse && res.summary && res.summary !== res.text) {
     lines.push(res.summary);
   }
   if (res.text) {
     lines.push(res.text);
+  } else if (res.summary) {
+    lines.push(res.summary);
   }
 
   // Verification status block
-  if (res.verification) {
+  if (fullResponse && res.verification) {
     const vStatus = res.verification.passed ? "PASSED" : "FAILED";
     lines.push(`\n[Verification: ${vStatus} via ${res.verification.method}]`);
     if (res.verification.error) {
@@ -48,13 +66,21 @@ export function formatMcpResponse<T = unknown>(
   }
 
   const execVerification = res.execution_verification || res.verification?.execution;
-  if (execVerification) {
+  if (fullResponse && execVerification) {
     lines.push(`[Execution Verification: ${execVerification.status} via ${execVerification.method}]`);
   }
 
   const stateVerification = res.state_verification || res.verification?.state;
-  if (stateVerification) {
+  if (fullResponse && stateVerification) {
     lines.push(`[State Verification: ${stateVerification.status}${stateVerification.method ? ` via ${stateVerification.method}` : ""}]`);
+  }
+
+  if (!fullResponse && (res.verification || execVerification || stateVerification)) {
+    const executionStatus = execVerification?.status || (res.success ? "passed" : "failed");
+    const stateStatus =
+      stateVerification?.status ||
+      (res.verification ? (res.verification.passed ? "passed" : "failed") : "not_performed");
+    lines.push(`[Verification: execution=${executionStatus}; state=${stateStatus}]`);
   }
 
   // Optional stdout/stderr/exitCode info
@@ -71,7 +97,6 @@ export function formatMcpResponse<T = unknown>(
   }
 
   // Active execution context & Call ID
-  const ctx = activityContextStorage.getStore();
   const callId = res.call_id || ctx?.callId || `call_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
   const displayTitle = res.display_title || ctx?.displayTitle || res.action;
   const purpose = res.purpose || ctx?.purpose;
@@ -134,7 +159,42 @@ export function formatMcpResponse<T = unknown>(
     lines.push(`\n[Warnings: ${warnings.join("; ")}]`);
   }
 
-  lines.push(`\n--- STRUCTURED_PAYLOAD_JSON ---\n${JSON.stringify(structuredPayload, null, 2)}`);
+  if (fullResponse) {
+    lines.push(`\n--- STRUCTURED_PAYLOAD_JSON ---\n${JSON.stringify(structuredPayload, null, 2)}`);
+  } else {
+    let compactData: unknown = undefined;
+    let dataOmitted = false;
+    let dataBytes = 0;
+    if (res.data !== undefined) {
+      try {
+        const serialized = JSON.stringify(res.data);
+        dataBytes = Buffer.byteLength(serialized, "utf8");
+        if (dataBytes <= 2048) {
+          compactData = res.data;
+        } else {
+          dataOmitted = true;
+        }
+      } catch {
+        dataOmitted = true;
+      }
+    }
+
+    const compactPayload = {
+      call_id: callId,
+      success: res.success,
+      action: res.action,
+      summary: structuredPayload.summary,
+      ...(res.error_code ? { error_code: res.error_code } : {}),
+      ...(compactData !== undefined ? { data: compactData } : {}),
+      ...(dataOmitted ? { data_omitted_from_meta: true, data_bytes: dataBytes } : {}),
+      ...(warnings.length > 0 ? { warnings } : {}),
+      execution_verification: structuredPayload.execution_verification,
+      state_verification: structuredPayload.state_verification,
+      ...(res.durationMs !== undefined ? { duration_ms: res.durationMs } : {}),
+      ...(res.exitCode !== undefined && res.exitCode !== null ? { exit_code: res.exitCode } : {}),
+    };
+    lines.push(`\n--- RESPONSE_META_JSON ---\n${JSON.stringify(compactPayload)}`);
+  }
 
   content.push({
     type: "text",
