@@ -12,12 +12,40 @@
 
 ---
 
-## ⚡ Quickstart: Connect ChatGPT Web in 60 Seconds
+## ⚡ Quickstart: Install and Connect ChatGPT Web
 
-Give ChatGPT Web hands-on terminal, code editing, and browser automation capabilities on your local computer with a single click.
+Give ChatGPT Web hands-on terminal, code editing, and browser automation capabilities on your local computer.
+
+### Step 0: Install Dependencies (First Run Only)
+
+Clone this repository and enter its directory. VerityMCP needs **Node.js 20 or newer**.
+The setup scripts check prerequisites, install missing Node.js/pnpm/Git/cloudflared where supported,
+install dependencies from `pnpm-lock.yaml`, download Playwright Chromium, and build the app.
+Depending on your OS, installing system prerequisites may prompt for administrator permission.
+
+**Windows:** Double-click `setup.bat` or use PowerShell:
+
+```powershell
+.\setup.bat
+# Or run the PowerShell script directly:
+powershell -NoProfile -ExecutionPolicy Bypass -File .\setup.ps1
+```
+
+**macOS / Linux:**
+
+```bash
+bash ./setup.sh
+```
+
+To check prerequisites without installing anything, run `setup.bat -CheckOnly` on Windows or
+`bash ./setup.sh --check` on macOS/Linux. For local-only use, skip the Cloudflare dependency
+with `-SkipCloudflared` (Windows) or `--skip-cloudflared` (macOS/Linux). You can skip
+Chromium with `-SkipBrowser` / `--skip-browser`, but browser automation may not work.
+If a Linux distribution's Node.js package is older than 20, install a supported version
+from [Node.js](https://nodejs.org/) and rerun setup.
 
 ### Step 1: Launch VerityMCP
-Double-click `start.bat` on Windows (or run `pnpm start` / `npm start` on macOS/Linux):
+Double-click `start.bat` on Windows (or run `pnpm start` on macOS/Linux):
 
 ```cmd
 start.bat
@@ -33,10 +61,16 @@ start.bat
                  CONNECTION READY!                        
 ==========================================================
   MCP Server URL:   https://neat-agent-tunnel.trycloudflare.com/mcp (COPIED TO CLIPBOARD)
-  Owner Token:      NGd1YTHmw_FhX0elAVIEfJ6z-eOUeI-VMzQJweDo38Q
+  Owner Token:      <YOUR-GENERATED-OWNER-TOKEN>
 ==========================================================
 ```
-> The secure Cloudflare tunnel URL is **automatically copied to your clipboard**!
+> On Windows, the secure Cloudflare tunnel URL is **automatically copied to your clipboard**.
+
+**macOS/Linux:** `pnpm start` starts a local server but does not create a remote tunnel.
+Run `cloudflared tunnel --url http://127.0.0.1:7980` in one terminal, then start the
+server in another with `VERITY_PUBLIC_BASE_URL=https://YOUR-TUNNEL.trycloudflare.com pnpm start`
+(substitute the URL Cloudflare printed). Connect to that HTTPS URL with `/mcp` appended.
+If the Linux installer placed cloudflared in `~/.local/bin`, ensure that folder is on your PATH.
 
 ### Step 2: Add to ChatGPT Web
 1. Open [ChatGPT](https://chatgpt.com) in your browser.
