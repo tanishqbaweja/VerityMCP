@@ -44,6 +44,13 @@ Chromium with `-SkipBrowser` / `--skip-browser`, but browser automation may not 
 If a Linux distribution's Node.js package is older than 20, install a supported version
 from [Node.js](https://nodejs.org/) and rerun setup.
 
+**Windows troubleshooting: `"node" is not recognized` while running `pnpm.cmd`:** This
+usually means Node.js was installed but the current terminal cannot find it. Close the
+installer, open a new Command Prompt, and run `node --version` and `pnpm --version`.
+If Node.js is still missing, run `winget install --id OpenJS.NodeJS.LTS --exact`, then
+open a new terminal and run `setup.bat` again. The setup script now checks that CMD can
+run Node.js before attempting pnpm, and fixes the session PATH when possible.
+
 ### Step 1: Launch VerityMCP
 Double-click `start.bat` on Windows (or run `pnpm start` on macOS/Linux):
 

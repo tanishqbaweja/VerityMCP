@@ -38,12 +38,55 @@ function Invoke-Checked([string]$program, [string[]]$arguments) {
     }
 }
 
-function Get-NodeMajor {
+function Get-NodeExecutable {
+    # Winget may have installed Node.js without updating the current terminal's PATH.
     $node = Find-Tool -names @("node.exe", "node")
+    if ($node -and (Test-Path -LiteralPath $node)) { return $node }
+    $candidates = @(
+        (Join-Path $env:ProgramFiles "nodejs\node.exe"),
+        (Join-Path $env:LOCALAPPDATA "Programs\nodejs\node.exe"),
+        (Join-Path $env:APPDATA "npm\node.exe")
+    )
+    foreach ($candidate in $candidates) {
+        if (Test-Path -LiteralPath $candidate) { return $candidate }
+    }
+    return $null
+}
+
+function Ensure-NodeOnPath {
+    $node = Get-NodeExecutable
+    if (-not $node) { return }
+    $nodeDirectory = Split-Path -Parent $node
+    if (($env:PATH -split ';') -notcontains $nodeDirectory) {
+        # Only change this setup process, never the system-wide PATH.
+        $env:PATH = "$nodeDirectory;$env:PATH"
+        Say "Node.js found outside PATH; adding it for this setup session."
+    }
+}
+
+function Test-NodeInCmd {
+    # pnpm.cmd runs via cmd.exe, which must independently resolve 'node'.
+    & cmd.exe /d /c "node --version >nul 2>nul" | Out-Null
+    return ($LASTEXITCODE -eq 0)
+}
+
+function Get-NodeMajor {
+    $node = Get-NodeExecutable
     if (-not $node) { return 0 }
-    $version = & $node --version
-    if ($LASTEXITCODE -ne 0 -or $version -notmatch '^v(\d+)\.') { return 0 }
-    return [int]$Matches[1]
+    try {
+        $version = & $node --version
+        if ($LASTEXITCODE -ne 0 -or $version -notmatch '^v(\d+)\.') { return 0 }
+        return [int]$Matches[1]
+    } catch { return 0 }
+}
+
+function Get-PnpmVersion([string]$pnpm) {
+    if (-not $pnpm) { return $null }
+    try {
+        $version = & $pnpm --version 2>$null
+        if ($LASTEXITCODE -ne 0 -or -not $version) { return $null }
+        return [string]($version | Select-Object -First 1)
+    } catch { return $null }
 }
 
 function Get-Cloudflared {
@@ -84,15 +127,21 @@ try {
         Fail "package.json or pnpm-lock.yaml is missing. Run setup inside the VerityMCP repository."
     }
 
+    if (-not $CheckOnly) {
+        Ensure-NodeOnPath
+    }
     $nodeMajor = Get-NodeMajor
+    $nodeInCmd = Test-NodeInCmd
     $pnpm = Find-Tool -names @("pnpm.cmd", "pnpm")
+    $pnpmVersion = if ($nodeInCmd) { Get-PnpmVersion $pnpm } else { $null }
     $cloudflared = Get-Cloudflared
     $git = Find-Tool -names @("git.exe", "git")
 
     if ($CheckOnly) {
         Say "Read-only prerequisite check:"
         Say ("  Node.js 20+: {0}" -f $(if ($nodeMajor -ge 20) { "OK" } else { "MISSING / TOO OLD" }))
-        Say ("  pnpm: {0}" -f $(if ($pnpm) { "OK" } else { "MISSING" }))
+        Say ("  Node.js visible to CMD: {0}" -f $(if ($nodeInCmd) { "OK" } else { "MISSING (pnpm.cmd cannot run)" }))
+        Say ("  pnpm executable: {0}" -f $(if ($pnpmVersion) { "OK ($pnpmVersion)" } elseif ($pnpm) { "FOUND BUT NOT WORKING" } else { "MISSING" }))
         Say ("  Git: {0}" -f $(if ($git) { "OK" } else { "MISSING" }))
         if (-not $SkipCloudflared) {
             Say ("  cloudflared: {0}" -f $(if ($cloudflared) { "OK" } else { "MISSING" }))
@@ -105,7 +154,7 @@ try {
         } else { $chromium = $true }
         $built = Test-Path "dist\cli.js"
         Say ("  Compiled app: {0}" -f $(if ($built) { "present" } else { "MISSING" }))
-        if ($nodeMajor -lt 20 -or -not $pnpm -or -not $git -or (-not $SkipCloudflared -and -not $cloudflared) -or -not $deps -or -not $chromium -or -not $built) { exit 1 }
+        if ($nodeMajor -lt 20 -or -not $nodeInCmd -or -not $pnpmVersion -or -not $git -or (-not $SkipCloudflared -and -not $cloudflared) -or -not $deps -or -not $chromium -or -not $built) { exit 1 }
         Say "Everything checked is ready."
         exit 0
     }
@@ -113,23 +162,35 @@ try {
     if ($nodeMajor -lt 20) {
         Say "Node.js >= 20 is required. Installing the current LTS via winget..."
         Install-Winget "OpenJS.NodeJS.LTS"
+        Ensure-NodeOnPath
         $nodeMajor = Get-NodeMajor
-        if ($nodeMajor -lt 20) {
-            Fail "Node.js >= 20 is not visible. Open a new terminal and rerun setup (or install it from https://nodejs.org/)."
-        }
     }
-    Say ("Node.js: {0}" -f (& (Find-Tool -names @("node.exe", "node")) --version))
+    if ($nodeMajor -lt 20) {
+        Fail "Node.js >= 20 is not available. Install Node.js LTS from https://nodejs.org/, open a NEW terminal, and run setup.bat again."
+    }
+    # An already installed pnpm.cmd can exist while its underlying 'node' command is missing.
+    # Check the CMD environment explicitly before ever executing the pnpm shim.
+    Ensure-NodeOnPath
+    if (-not (Test-NodeInCmd)) {
+        Fail "Node.js is installed but cmd.exe cannot find 'node'. Open a NEW Command Prompt and rerun setup.bat. If needed, add C:\Program Files\nodejs to PATH."
+    }
+    Say ("Node.js: {0}" -f (& (Get-NodeExecutable) --version))
 
-    if (-not $pnpm) {
+    $pnpmVersion = Get-PnpmVersion $pnpm
+    if (-not $pnpmVersion) {
         $npm = Find-Tool -names @("npm.cmd", "npm")
-        if (-not $npm) { Fail "Node.js is present but npm is missing. Repair your Node.js installation and rerun setup." }
-        Say "Installing pnpm 10 via npm..."
+        if (-not $npm) { Fail "Node.js is present but npm is missing. Repair Node.js, open a new terminal and rerun setup." }
+        Say "pnpm is missing or cannot launch. Installing/repairing pnpm 10 via npm..."
         Invoke-Checked -program $npm -arguments @("install", "--global", "pnpm@10")
         Refresh-ProcessPath
+        Ensure-NodeOnPath
         $pnpm = Find-Tool -names @("pnpm.cmd", "pnpm")
-        if (-not $pnpm) { Fail "pnpm was installed but is not visible. Open a new terminal and rerun setup." }
+        $pnpmVersion = Get-PnpmVersion $pnpm
+        if (-not $pnpmVersion) {
+            Fail "pnpm still cannot start. Verify 'node --version' and 'pnpm --version' both work in a NEW Command Prompt, then rerun setup.bat."
+        }
     }
-    Say ("pnpm: {0}" -f (& $pnpm --version))
+    Say ("pnpm: {0}" -f $pnpmVersion)
 
     if (-not $git) {
         Say "Installing Git for version-control tools..."
