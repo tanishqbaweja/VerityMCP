@@ -1,6 +1,10 @@
 # VerityMCP Launcher with Cloudflare Tunnel & Verification Engine
 $ErrorActionPreference = "Stop"
 
+# Keep the launcher rooted at the same project directory as the Node server.
+$projectRoot = Split-Path -Parent $PSScriptRoot
+Set-Location -LiteralPath $projectRoot
+
 $cloudflaredPath = "C:\Program Files (x86)\cloudflared\cloudflared.exe"
 if (-not (Test-Path $cloudflaredPath)) {
     $cloudflaredPath = "cloudflared"
@@ -72,15 +76,60 @@ try {
     $clipboardNotice = ""
 }
 
-# Read owner token if available
-$authPath = "$env:USERPROFILE\.verity\auth.json"
-$ownerToken = ""
-if (Test-Path $authPath) {
-    try {
-        $authJson = Get-Content $authPath -Raw | ConvertFrom-Json
-        $ownerToken = $authJson.ownerToken
-    } catch {}
+# Resolve the same owner credential as the Node server:
+# VERITY_OWNER_TOKEN, project data directory, then legacy home data.
+$ownerToken = [string]$env:VERITY_OWNER_TOKEN
+$dataRoot = if ($env:VERITY_DATA_DIR) {
+    [System.IO.Path]::GetFullPath($env:VERITY_DATA_DIR)
+} elseif ($env:VERITY_ROOT) {
+    Join-Path ([System.IO.Path]::GetFullPath($env:VERITY_ROOT)) ".verity"
+} else {
+    Join-Path $projectRoot ".verity"
 }
+$authPath = Join-Path $dataRoot "auth.json"
+$legacyAuthPath = Join-Path $env:USERPROFILE ".verity\auth.json"
+
+function Read-OwnerToken([string]$filePath) {
+    if (-not (Test-Path -LiteralPath $filePath)) { return $null }
+    try {
+        $json = Get-Content -LiteralPath $filePath -Raw -ErrorAction Stop | ConvertFrom-Json -ErrorAction Stop
+        $value = if ($json.ownerToken) { [string]$json.ownerToken } elseif ($json.token) { [string]$json.token } else { "" }
+        if (-not $value.Trim()) { throw "Missing ownerToken/token field" }
+        return $value
+    } catch {
+        throw "Unable to read owner credentials from $filePath. Refusing to start without authentication: $_"
+    }
+}
+
+if (-not $ownerToken.Trim()) {
+    $ownerToken = Read-OwnerToken $authPath
+    if (-not $ownerToken) { $ownerToken = Read-OwnerToken $legacyAuthPath }
+}
+
+if (-not $ownerToken) {
+    # First run: generate a secure password once, and keep it in ignored local state.
+    [System.IO.Directory]::CreateDirectory($dataRoot) | Out-Null
+    $randomBytes = New-Object byte[] 32
+    $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+    try { $rng.GetBytes($randomBytes) } finally { $rng.Dispose() }
+    $ownerToken = [Convert]::ToBase64String($randomBytes).TrimEnd("=").Replace("+", "-").Replace("/", "_")
+    $payload = @{ ownerToken = $ownerToken } | ConvertTo-Json
+    $stream = $null
+    try {
+        $stream = [System.IO.File]::Open($authPath, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+        $payloadBytes = New-Object System.Text.UTF8Encoding($false)
+        $buffer = $payloadBytes.GetBytes($payload + [Environment]::NewLine)
+        $stream.Write($buffer, 0, $buffer.Length)
+    } catch [System.IO.IOException] {
+        if (Test-Path -LiteralPath $authPath) {
+            $ownerToken = Read-OwnerToken $authPath
+        } else { throw }
+    } finally {
+        if ($stream) { $stream.Dispose() }
+    }
+    Write-Host "[Launcher] Created a persistent owner password in the local .verity directory." -ForegroundColor Gray
+}
+if (-not $ownerToken) { throw "Owner password is unavailable. Refusing to start without authentication." }
 
 Write-Host ""
 Write-Host "==========================================================" -ForegroundColor Green
@@ -97,7 +146,7 @@ Write-Host "Next Steps in ChatGPT Web:" -ForegroundColor White
 Write-Host "1. Paste '$mcpUrl' into your MCP / Custom Action Connector." -ForegroundColor White
 Write-Host "2. Authentication Options:" -ForegroundColor White
 Write-Host "   - Option A (Recommended - API Key):" -ForegroundColor Cyan
-Write-Host "     Select 'API Key' -> Type 'Bearer' -> Paste Owner Password: $ownerToken" -ForegroundColor Gray
+Write-Host "     Select 'API Key' -> Type 'Bearer' -> use the Owner Password printed above." -ForegroundColor Gray
 Write-Host "   - Option B (OAuth 2.1):" -ForegroundColor Cyan
 Write-Host "     Select 'OAuth' -> Endpoints are auto-discovered from $tunnelUrl" -ForegroundColor Gray
 Write-Host "     If manual: Auth URL = $tunnelUrl/oauth/authorize | Token URL = $tunnelUrl/oauth/token" -ForegroundColor Gray

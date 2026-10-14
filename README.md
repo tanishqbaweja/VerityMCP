@@ -276,7 +276,7 @@ VerityMCP exposes a unified, production-ready tool surface organized across 12 e
 4. Configure:
    - **URL**: `https://<subdomain>.trycloudflare.com/mcp`
    - **Authentication**: Bearer Token
-   - **Token**: Copy from your VerityMCP console or `~/.verity/auth.json`.
+   - **Token**: Copy the owner password displayed by `start.bat`, or read it from the ignored project `.verity/auth.json` (unless you configured `VERITY_OWNER_TOKEN` or a legacy home-directory credential).
 
 ### 2. Local IDE & Agent Setup
 To run VerityMCP locally with standard MCP clients:

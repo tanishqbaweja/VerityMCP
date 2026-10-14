@@ -88,7 +88,7 @@ Health Check:   http://${config.host}:${config.port}/healthz
 Default Shell:  ${shells.defaultShell} (${defaultShellInfo.description})
 Git Bash:       ${shells.gitBash.available ? shells.gitBash.description : "Not detected"}
 Active Root:    ${workspaceManager.getActiveWorkspaceRoot()}
-Auth Token:     ${config.ownerToken ? "(Configured via ~/.verity/auth.json)" : "(None - public access)"}
+Auth Token:     ${config.ownerToken ? "(Configured)" : "(Missing - server should not be exposed)"}
 ============================================================
 `);
   });

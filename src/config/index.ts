@@ -1,6 +1,6 @@
-import fs from "node:fs";
 import path from "node:path";
 import os from "node:os";
+import { resolveOwnerToken } from "./owner_token.js";
 import type { VerityConfig } from "../types/index.js";
 import {
   getServerRoot,
@@ -22,30 +22,9 @@ export function loadConfig(overrides?: Partial<VerityConfig>): VerityConfig {
   // Ensure persistent directories exist under <server_root>/.verity
   ensureDirectoriesExistSync();
 
-  // Probe owner token from <persistentDataRoot>/auth.json or ~/.verity/auth.json or env
-  let ownerToken = process.env.VERITY_OWNER_TOKEN;
-  if (!ownerToken) {
-    const candidates = [
-      path.join(persistentDataRoot, "auth.json"),
-      path.join(os.homedir(), ".verity", "auth.json"),
-    ];
-
-    for (const authPath of candidates) {
-      try {
-        if (fs.existsSync(authPath)) {
-          const raw = fs.readFileSync(authPath, "utf-8");
-          const parsed = JSON.parse(raw);
-          if (parsed.ownerToken) {
-            ownerToken = parsed.ownerToken;
-            break;
-          } else if (parsed.token) {
-            ownerToken = parsed.token;
-            break;
-          }
-        }
-      } catch {}
-    }
-  }
+  // Provision a persistent first-run owner token before the HTTP server starts.
+  // Existing env/local/legacy tokens take precedence and are never rotated here.
+  const ownerToken = overrides?.ownerToken ?? resolveOwnerToken(persistentDataRoot);
 
   const allowedRootsEnv = process.env.VERITY_ALLOWED_ROOTS;
   let allowedRoots: string[] = [];
@@ -65,7 +44,7 @@ export function loadConfig(overrides?: Partial<VerityConfig>): VerityConfig {
     port: overrides?.port ?? port,
     host: overrides?.host ?? host,
     publicBaseUrl: overrides?.publicBaseUrl ?? publicBaseUrl,
-    ownerToken: overrides?.ownerToken ?? ownerToken,
+    ownerToken,
     allowedRoots: overrides?.allowedRoots ?? allowedRoots,
     worktreesDir: overrides?.worktreesDir ?? worktreesDir,
     serverRoot: overrides?.serverRoot ?? serverRoot,
